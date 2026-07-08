@@ -1,0 +1,142 @@
+services:
+  opencode:
+    build:
+      context: .
+      args:
+        CONFIG_REPO: ${CONFIG_REPO:-https://github.com/roborew/opencode.git}
+        CONFIG_REF: ${CONFIG_REF:-main}
+    container_name: opencode-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      OPENCODE_CONFIG_DIR: /root/.config/opencode
+      OPENCODE_OVERRIDE: /root/overrides/opencode.server.json
+      OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD}
+      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-opencode}
+      MILVUS_ADDRESS: http://milvus-standalone:19530
+      MILVUS_TOKEN: ${MILVUS_TOKEN:-local}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-OpenAI}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GH_ORG: ${GH_ORG:-}
+      GH_PROJECT: ${GH_PROJECT:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+      INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}
+      INFISICAL_ENV: ${INFISICAL_ENV:-dev}
+      INFISICAL_DOMAIN: ${INFISICAL_DOMAIN:-}
+      INFISICAL_API_URL: ${INFISICAL_API_URL:-}
+      INFISICAL_CLIENT_ID: ${INFISICAL_CLIENT_ID:-}
+      INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET:-}
+      INFISICAL_TOKEN: ${INFISICAL_TOKEN:-}
+      INFISICAL_USE_CLI: ${INFISICAL_USE_CLI:-true}
+      SSH_AUTH_SOCK: /ssh-agent
+    volumes:
+      - opencode-data:/root/.local/share/opencode
+      - ${OPENCODE_APPS_DIR:-${HOME}/05_Repos/01_PROJECTS/apps}:/workspace/apps:delegated
+      - ${SSH_AUTH_SOCK}:/ssh-agent
+    working_dir: /workspace/apps
+    depends_on:
+      milvus-standalone:
+        condition: service_healthy
+    ports:
+      - "${OPENCODE_PUBLISH_PORT:-4096}:4096"
+    networks:
+      - opencode-net
+
+  twingate-connector:
+    image: twingate/connector:1
+    container_name: twingate-connector
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TWINGATE_NETWORK: ${TWINGATE_NETWORK}
+      TWINGATE_ACCESS_TOKEN: ${TWINGATE_ACCESS_TOKEN}
+      TWINGATE_REFRESH_TOKEN: ${TWINGATE_REFRESH_TOKEN}
+      TWINGATE_LABEL_HOSTNAME: opencode-connector
+      TWINGATE_LOG_ANALYTICS: v2
+      TWINGATE_LOG_LEVEL: "3"
+      TWINGATE_DNS: 1.1.1.1
+    sysctls:
+      net.ipv4.ping_group_range: "0 2147483647"
+    networks:
+      - opencode-net
+
+  etcd:
+    container_name: milvus-etcd
+    restart: unless-stopped
+    image: quay.io/coreos/etcd:v3.5.25
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - opencode-net
+
+  minio:
+    container_name: milvus-minio
+    restart: unless-stopped
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "${MINIO_API_PUBLISH_PORT:-19000}:9000"
+      - "${MINIO_CONSOLE_PUBLISH_PORT:-19001}:9001"
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - opencode-net
+
+  milvus-standalone:
+    container_name: milvus-standalone
+    restart: unless-stopped
+    image: milvusdb/milvus:v2.6.12
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MQ_TYPE: woodpecker
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "${MILVUS_PUBLISH_PORT:-19530}:19530"
+      - "${MILVUS_HEALTH_PUBLISH_PORT:-9091}:9091"
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - opencode-net
+
+volumes:
+  opencode-data:
+
+networks:
+  opencode-net:
+    driver: bridge

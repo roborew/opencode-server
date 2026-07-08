@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Infisical-first runtime env (deployed), with local compose .env fallback (development).
+set -euo pipefail
+
+export OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-/root/.config/opencode}"
+export OPENCODE_OVERRIDE="${OPENCODE_OVERRIDE:-/root/overrides/opencode.server.json}"
+export MILVUS_ADDRESS="${MILVUS_ADDRESS:-http://milvus-standalone:19530}"
+export PATH="/root/.config/opencode/bin:/root/.opencode/bin:/root/.local/bin:${PATH}"
+
+# Apply deployment overrides into cloned opencode.json (OPENCODE_CONFIG env alone does not deep-merge MCP)
+python3 /usr/local/bin/merge-config.py
+unset OPENCODE_CONFIG
+
+# gh CLI token auth when GH_TOKEN is set (no mounted ~/.config/gh)
+if [[ -n "${GH_TOKEN:-}" ]]; then
+  echo "${GH_TOKEN}" | gh auth login --with-token 2>/dev/null || true
+fi
+
+run_cmd() {
+  exec "$@"
+}
+
+if [[ "${INFISICAL_USE_CLI:-}" == "false" || "${INFISICAL_USE_CLI:-}" == "0" || "${INFISICAL_RUNTIME:-}" == "0" ]]; then
+  run_cmd "$@"
+fi
+
+domain="${INFISICAL_DOMAIN:-${INFISICAL_API_URL:-}}"
+project_id="${INFISICAL_PROJECT_ID:-}"
+
+if [[ -z "$project_id" || -z "$domain" ]]; then
+  run_cmd "$@"
+fi
+
+token="${INFISICAL_TOKEN:-}"
+if [[ -z "$token" ]]; then
+  client_id="${INFISICAL_CLIENT_ID:-${INFISICAL_UNIVERSAL_AUTH_CLIENT_ID:-}}"
+  client_secret="${INFISICAL_CLIENT_SECRET:-${INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET:-}}"
+  if [[ -n "$client_id" && -n "$client_secret" ]]; then
+    token="$(
+      infisical login \
+        --method=universal-auth \
+        --client-id="$client_id" \
+        --client-secret="$client_secret" \
+        --domain="$domain" \
+        --silent \
+        --plain
+    )" || {
+      echo "opencode-entrypoint: infisical universal-auth login failed" >&2
+      exit 1
+    }
+  else
+    run_cmd "$@"
+  fi
+fi
+
+export INFISICAL_TOKEN="$token"
+
+exec infisical run \
+  --projectId="$project_id" \
+  --env="${INFISICAL_ENV:-dev}" \
+  --domain="$domain" \
+  -- "$@"
