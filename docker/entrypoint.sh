@@ -16,6 +16,29 @@ if [[ -n "${GH_TOKEN:-}" ]]; then
   echo "${GH_TOKEN}" | gh auth login --with-token 2>/dev/null || true
 fi
 
+# MCP OAuth listens on 127.0.0.1:19876 inside the container. Host browsers (and
+# SSH -L tunnels) hit the published eth0 port, so bridge eth IP → loopback.
+# Bind the container eth IP only — not 0.0.0.0 — so OpenCode can still bind loopback.
+start_oauth_callback_proxy() {
+  local port="${OPENCODE_OAUTH_CALLBACK_PORT:-19876}"
+  local eth_ip
+  eth_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -z "$eth_ip" ]]; then
+    echo "opencode-entrypoint: warn: no eth IP; MCP OAuth host callback proxy disabled" >&2
+    return 0
+  fi
+  if ! command -v socat >/dev/null 2>&1; then
+    echo "opencode-entrypoint: warn: socat missing; MCP OAuth host callback proxy disabled" >&2
+    return 0
+  fi
+  # Survive entrypoint `exec` (otherwise bash may SIGHUP the child).
+  setsid socat "TCP-LISTEN:${port},bind=${eth_ip},fork,reuseaddr" "TCP:127.0.0.1:${port}" \
+    >/dev/null 2>&1 &
+  echo "opencode-entrypoint: MCP OAuth callback proxy ${eth_ip}:${port} → 127.0.0.1:${port}" >&2
+}
+
+start_oauth_callback_proxy
+
 run_cmd() {
   exec "$@"
 }

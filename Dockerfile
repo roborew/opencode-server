@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     ripgrep \
+    socat \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -70,7 +71,7 @@ COPY docker/entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
 COPY docker/merge-config.py /usr/local/bin/merge-config.py
 RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/merge-config.py
 
-EXPOSE 4097
+EXPOSE 4097 19876
 
 ENTRYPOINT ["/usr/local/bin/opencode-entrypoint.sh"]
 CMD ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4097"]

@@ -142,6 +142,32 @@ list_mcp_json() {
   api_get "/mcp" 2>/dev/null || echo '{}'
 }
 
+# After `opencode mcp auth`, tokens are on disk but the long-running serve
+# process may still report needs_auth until the MCP transport is reconnected.
+mcp_server_reconnect() {
+  local name="$1"
+  api_post "/mcp/${name}/disconnect" '{}' >/dev/null 2>&1 || true
+  api_post "/mcp/${name}/connect" '{}' >/dev/null 2>&1 || true
+}
+
+mcp_status_for() {
+  local name="$1"
+  local mcp_json
+  mcp_json="$(list_mcp_json 2>/dev/null || echo '{}')"
+  echo "$mcp_json" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+info = d.get(sys.argv[1], {})
+print(info.get('status') or info.get('state') or 'unknown')
+" "$name" 2>/dev/null || echo unknown
+}
+
+# CLI reads mcp-auth.json directly; use when HTTP /mcp is stale after OAuth.
+mcp_cli_connected() {
+  local name="$1"
+  docker_exec opencode mcp list 2>/dev/null | grep -E "✓ ${name} " | grep -qi connected
+}
+
 list_providers_json() {
   api_get "/provider" 2>/dev/null || echo '{}'
 }

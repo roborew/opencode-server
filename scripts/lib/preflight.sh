@@ -159,26 +159,44 @@ check_gh_auth() {
   if status="$(docker_exec gh auth status 2>&1)"; then
   :
   else
-    preflight_record fail "gh auth failed" "set GH_TOKEN in .env with repo scope"
+    preflight_record fail "gh auth failed" \
+      "set GH_TOKEN in .env (fine-grained PAT or classic with repo + read:org)"
     return
   fi
-  local scopes=""
-  if echo "$status" | grep -qi "repo"; then
-    scopes="repo"
-  fi
-  if echo "$status" | grep -qi "read:org"; then
-    scopes="${scopes:+$scopes, }read:org"
-  fi
-  if [[ -z "$scopes" ]]; then
-    preflight_record warn "gh auth ok but missing recommended scopes (repo, read:org)"
+
+  # Fine-grained PATs (github_pat_*) do not expose classic OAuth scopes in
+  # `gh auth status`. Validate by capability instead of grepping repo/read:org.
+  if echo "$status" | grep -q 'github_pat_'; then
+    preflight_record ok "gh auth (fine-grained PAT)"
   else
-    preflight_record ok "gh auth (scopes: ${scopes})"
+    local scopes=""
+    if echo "$status" | grep -qiE '(^|[[:space:]'\''"])repo([,]|[[:space:]'\''"]|$)'; then
+      scopes="repo"
+    fi
+    if echo "$status" | grep -qi "read:org"; then
+      scopes="${scopes:+$scopes, }read:org"
+    fi
+    if [[ -z "$scopes" ]]; then
+      preflight_record warn "gh auth ok but missing classic scopes (repo, read:org)" \
+        "prefer a fine-grained PAT — see README"
+    else
+      preflight_record ok "gh auth (classic scopes: ${scopes})"
+    fi
   fi
+
   if [[ -n "${GH_ORG:-}" ]]; then
     if docker_exec gh api "orgs/${GH_ORG}" >/dev/null 2>&1; then
       preflight_record ok "gh org access: ${GH_ORG}"
     else
-      preflight_record fail "cannot access org ${GH_ORG}" "check GH_ORG name and token org access"
+      preflight_record fail "cannot access org ${GH_ORG}" \
+        "check GH_ORG, token resource owner, and org Members: Read"
+      return
+    fi
+    if docker_exec gh api "orgs/${GH_ORG}/repos?per_page=1" >/dev/null 2>&1; then
+      preflight_record ok "gh org repo list: ${GH_ORG}"
+    else
+      preflight_record fail "cannot list repos in ${GH_ORG}" \
+        "grant Contents (and Metadata) on the org's repositories"
     fi
   fi
 }
@@ -306,16 +324,18 @@ offer_mcp_auth() {
     echo
     read -r -p "Authenticate mcp/${name} now? [y/N] " answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
-      echo "Run in your browser the URL printed below:"
+      echo "Open the authorize URL in a browser that can reach 127.0.0.1:19876"
+      echo "  Local Mac: use this machine's browser"
+      echo "  Remote/DO: ssh -N -L 19876:127.0.0.1:19876 user@host  (then use the laptop browser)"
       docker exec -it "$CONTAINER_NAME" opencode mcp auth "$name" || true
-      local mcp_json status
-      mcp_json="$(list_mcp_json 2>/dev/null || echo '{}')"
-      status="$(echo "$mcp_json" | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-info = d.get(sys.argv[1], {})
-print(info.get('status') or info.get('state') or 'unknown')
-" "$name" 2>/dev/null || echo unknown)"
+      # Auth writes tokens to disk; serve process needs an MCP reconnect to pick them up.
+      echo "Reconnecting mcp/${name} on the OpenCode server…"
+      mcp_server_reconnect "$name"
+      local status
+      status="$(mcp_status_for "$name")"
+      if [[ ! "$status" =~ ^(connected|ready|ok)$ ]] && mcp_cli_connected "$name"; then
+        status="connected"
+      fi
       if [[ "$status" =~ ^(connected|ready|ok)$ ]]; then
         preflight_record ok "mcp/${name}: authenticated (${status})"
         PREFLIGHT_FAIL=$((PREFLIGHT_FAIL - 1))

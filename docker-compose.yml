@@ -43,6 +43,10 @@ services:
     ports:
       # Host + container port 4097 — avoids Kilo/other tools on 4096
       - "${OPENCODE_PUBLISH_PORT:-4097}:4097"
+      # MCP OAuth callback (OpenCode listens on container loopback; entrypoint
+      # socat bridges eth0→127.0.0.1). Default bind is loopback-only so DO
+      # droplets are not exposed publicly — use SSH -L from a laptop browser.
+      - "${OPENCODE_OAUTH_CALLBACK_PUBLISH:-127.0.0.1:19876}:19876"
     networks:
       opencode-net:
         aliases:
