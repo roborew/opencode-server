@@ -45,14 +45,16 @@ DOCKER_VOLUME_DIRECTORY=../milvus
 docker compose up -d --build
 ```
 
-4. Run post-compose setup (preflight + register projects):
+4. Run post-compose setup (preflight + register/amend projects + hosts):
 
 ```bash
 ./scripts/setup.sh
 # Or checks only:
 ./scripts/setup.sh preflight
-# Register all mounted git repos without prompts:
+# Sync all mounted git repos without prompts:
 ./scripts/setup.sh projects local --all --yes
+# Hosts entry + host-path session cleanup only:
+./scripts/setup.sh bootstrap --yes
 ```
 
 5. Verify:
@@ -176,24 +178,56 @@ Set `OPENCODE_PUBLISH_PORT=4097` in `.env` (default in compose). Override publis
 curl -sf -u "opencode:YOUR_PASSWORD" http://127.0.0.1:4097/global/health
 ```
 
+`localhost` reaches the same Docker server. Prefer `http://opencode.home.internal:4097` when you want the same hostname as Twingate clients.
+
 LAN IP (`http://192.168.1.71:4097`) still works on the home network but is **not** the Twingate resource — it breaks when the laptop leaves that LAN.
+
+### Same hostname on the Docker host (FQDN → loopback)
+
+**Why a hosts entry?** On the machine that runs the connector, `opencode.home.internal` often does not resolve in normal apps (even with Twingate connected). Remotes work; the host does not. Mapping the name to loopback lets this Mac use the same URL as phones:
+
+```text
+127.0.0.1 opencode.home.internal  →  published host port 4097  →  opencode-server
+```
+
+Phones still go: Twingate → VIP → connector → same container.
+
+`./scripts/setup.sh` can add this hosts line (sudo). It does **not** configure or modify OpenCode.app — attach that client to the server later yourself.
+
+```bash
+./scripts/setup.sh projects local --all --yes
+# Or hosts + session cleanup only:
+./scripts/setup.sh bootstrap --yes
+```
+
+Manual hosts (if you skipped the prompt):
+
+```bash
+sudo sh -c 'echo "127.0.0.1 opencode.home.internal" >> /etc/hosts'
+```
 
 ## Post-compose setup
 
-After `docker compose up`, run [`scripts/setup.sh`](scripts/setup.sh). It runs in two phases:
+After `docker compose up`, run [`scripts/setup.sh`](scripts/setup.sh). It runs in phases:
 
 1. **Preflight** — env, container health, workspace mount, Milvus, `gh` auth (fine-grained or classic), providers, enabled MCPs
-2. **Projects** — discover repos, multi-select (or `--all`), register with the OpenCode server
+2. **Projects (amend)** — choose the **desired** set (re-runs show `[on]`/`[off]`); register adds, deregister removes sessions for dropped repos
+3. **Host bootstrap** — `/etc/hosts` for `opencode.home.internal`, delete stray `/Users/...` sessions on the server, print web deep links
 
 ```bash
-./scripts/setup.sh                    # preflight, then choose local or github mode
+./scripts/setup.sh                    # preflight, then amend local/github set + bootstrap
 ./scripts/setup.sh preflight          # checks only
-./scripts/setup.sh projects local     # register git roots from mounted /workspace/apps
-./scripts/setup.sh projects github    # clone GH_ORG repos into /workspace/apps, then register
+./scripts/setup.sh projects local     # amend set from mounted /workspace/apps
+./scripts/setup.sh projects github    # clone GH_ORG repos, then amend set
 ./scripts/setup.sh projects local --all --yes --skip-preflight
+./scripts/setup.sh bootstrap --yes    # hosts + session cleanup only
 ```
 
-Flags: `--force` (continue after preflight failures), `--dry-run`, `--host URL`, `--json` (preflight summary), `--include-archived` (github mode).
+Re-run `./scripts/setup.sh` (or `projects local`) anytime to add/remove projects; Enter keeps the current set. `--all` makes the desired set every discovered repo.
+
+Flags: `--force` (continue after preflight failures), `--dry-run`, `--host URL`, `--json` (preflight summary), `--include-archived` (github mode), `--skip-bootstrap`.
+
+Setup never touches OpenCode.app or `~/Library/Application Support/ai.opencode.desktop/`.
 
 ### GitHub token (fine-grained PAT)
 
@@ -295,7 +329,7 @@ Re-run `opencode mcp auth cloudflare-api` after changing scopes (or revoke the p
 
 **GitHub** — requires `GH_TOKEN` + `GH_ORG`. Clones into flat `/workspace/apps/<repo>` (cloud: set `OPENCODE_APPS_DIR=/data/opencode/apps` on the host so clones persist). Re-run is idempotent: existing dirs get `git fetch`, already-registered projects are skipped.
 
-OpenCode registers **git repository roots**, not parent folders. Registration creates a seed session per repo so projects appear in the picker for all clients attaching to this server.
+OpenCode registers **git repository roots**, not parent folders. Setup treats your selection as the full desired set: missing repos get a seed session; removed ones have their sessions deleted (there is no separate project-delete API). Workspaces remain a separate, optional choice in any client UI.
 
 ## Project workspace
 
@@ -338,7 +372,8 @@ Local `opencode` and the Docker server can share the same vector index.
 | Claude Context fails | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network |
 | OpenRouter "missing authentication header" | Set `OPENROUTER_API_KEY` in `.env` (or configure via server UI `/connect`) |
 | docs-mcp-server fails | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on this Mac, or LAN IP) |
-| Projects not in picker | Run `./scripts/setup.sh projects local` to register git roots |
+| Projects not in picker | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `/workspace/apps/...` |
+| Host cannot resolve opencode.home.internal | `./scripts/setup.sh bootstrap` or add `127.0.0.1 opencode.home.internal` to `/etc/hosts` |
 | MCP needs auth (Cloudflare etc.) | Publish `127.0.0.1:19876`; on DO use `ssh -L 19876:127.0.0.1:19876`; then `docker exec -it opencode-server opencode mcp auth <name>` |
 | Twingate can't reach server | Resource = `opencode.home.internal`, TCP `4097`; do **not** set `TWINGATE_DNS` to public DNS; connector + OpenCode on `opencode-net` |
 | Port conflict with Kilo | OpenCode uses **4097**; leave 4096 for Kilo |
@@ -351,8 +386,8 @@ Local `opencode` and the Docker server can share the same vector index.
 ├── Dockerfile
 ├── docker-compose.yml
 ├── scripts/
-│   ├── setup.sh                 # Post-compose: preflight + project registration
-│   └── lib/                     # opencode-api, preflight, select helpers
+│   ├── setup.sh                 # Post-compose: preflight + project sync + hosts
+│   └── lib/                     # opencode-api, preflight, select, client-bootstrap helpers
 ├── docker/entrypoint.sh       # Infisical wrapper + merge-config + container defaults
 ├── docker/merge-config.py     # Deep-merge overrides into cloned opencode.json
 ├── overrides/opencode.server.json

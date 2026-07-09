@@ -79,6 +79,32 @@ api_post() {
   fi
 }
 
+api_delete() {
+  local path="$1"
+  local extra_header="${2:-}"
+  local base
+  base="$(opencode_base_url)"
+  if [[ -n "$extra_header" ]]; then
+    curl -sf -u "$(opencode_auth)" \
+      -H "$extra_header" \
+      -X DELETE "${base}${path}"
+  else
+    curl -sf -u "$(opencode_auth)" \
+      -X DELETE "${base}${path}"
+  fi
+}
+
+opencode_public_url() {
+  local fqdn="${OPENCODE_FQDN:-opencode.home.internal}"
+  local port="${OPENCODE_PUBLISH_PORT:-4097}"
+  port="${port##*:}"
+  echo "http://${fqdn}:${port}"
+}
+
+list_sessions_json() {
+  api_get "/session" 2>/dev/null || echo '[]'
+}
+
 wait_for_health() {
   local max_attempts="${1:-30}"
   local attempt=0
@@ -136,6 +162,75 @@ register_project() {
   body="$(python3 -c 'import json,sys; print(json.dumps({"title": sys.argv[1]}))' "$title")"
   api_post "/session" "$body" "X-Opencode-Directory: ${dir}" >/dev/null
   echo "ok"
+}
+
+# List sessions whose directory matches the worktree.
+list_sessions_for_directory() {
+  local dir="$1"
+  local all
+  all="$(
+    curl -sf -u "$(opencode_auth)" \
+      -H "X-Opencode-Directory: ${dir}" \
+      "$(opencode_base_url)/session" 2>/dev/null \
+      || list_sessions_json
+  )"
+  python3 -c "
+import json, sys
+dir_ = sys.argv[1]
+data = json.loads(sys.argv[2] or '[]')
+out = []
+for s in data:
+    d = s.get('directory') or ''
+    if d == dir_ or d.rstrip('/') == dir_.rstrip('/'):
+        out.append(s)
+print(json.dumps(out))
+" "$dir" "$all"
+}
+
+# Remove all sessions for a worktree so it drops out of the active UI set.
+# (OpenCode has no project.delete; sessions are the registration mechanism.)
+deregister_project() {
+  local dir="$1"
+  local sessions ids
+  sessions="$(list_sessions_for_directory "$dir")"
+  ids="$(python3 -c "
+import json, sys
+for s in json.loads(sys.argv[1] or '[]'):
+    sid = s.get('id') or ''
+    if sid:
+        print(sid)
+" "$sessions")"
+  if [[ -z "$ids" ]]; then
+    # No sessions to delete; project may still appear in GET /project until GC
+    echo "ok"
+    return 0
+  fi
+  local id fail=0
+  while IFS= read -r id; do
+    [[ -z "$id" ]] && continue
+    if ! api_delete "/session/${id}" >/dev/null 2>&1; then
+      # Retry with directory header
+      if ! api_delete "/session/${id}" "X-Opencode-Directory: ${dir}" >/dev/null 2>&1; then
+        fail=$((fail + 1))
+      fi
+    fi
+  done <<< "$ids"
+  if (( fail > 0 )); then
+    echo "fail"
+    return 1
+  fi
+  echo "ok"
+}
+
+list_registered_workspace_projects() {
+  list_projects_json | python3 -c "
+import json, sys
+root = sys.argv[1].rstrip('/')
+for p in json.load(sys.stdin):
+    wt = (p.get('worktree') or '').rstrip('/')
+    if wt.startswith(root + '/') or wt == root:
+        print(p.get('worktree') or wt)
+" "$WORKSPACE_ROOT"
 }
 
 list_mcp_json() {
