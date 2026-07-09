@@ -18,6 +18,29 @@ def deep_merge(base: dict, overlay: dict) -> dict:
     return result
 
 
+def apply_env_overrides(overlay: dict) -> dict:
+    docs_url = os.environ.get("DOCS_MCP_URL", "").strip()
+    if docs_url:
+        overlay.setdefault("mcp", {}).setdefault("docs-mcp-server", {})
+        overlay["mcp"]["docs-mcp-server"]["enabled"] = True
+        overlay["mcp"]["docs-mcp-server"]["url"] = docs_url
+
+    claude = overlay.get("mcp", {}).get("claude-context")
+    if isinstance(claude, dict):
+        env = claude.get("environment")
+        if isinstance(env, dict):
+            resolved = {}
+            for key, value in env.items():
+                if isinstance(value, str) and value.startswith("{env:") and value.endswith("}"):
+                    env_key = value[5:-1]
+                    resolved[key] = os.environ.get(env_key, "")
+                else:
+                    resolved[key] = value
+            claude["environment"] = resolved
+
+    return overlay
+
+
 def main() -> int:
     config_dir = Path(os.environ.get("OPENCODE_CONFIG_DIR", "/root/.config/opencode"))
     overlay_path = Path(os.environ.get("OPENCODE_OVERRIDE", "/root/overrides/opencode.server.json"))
@@ -32,6 +55,7 @@ def main() -> int:
 
     base = json.loads(target.read_text(encoding="utf-8"))
     overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+    overlay = apply_env_overrides(overlay)
     # Only merge known deployment override sections
     for section in ("permission", "mcp"):
         if section in overlay:

@@ -22,6 +22,7 @@ services:
       GH_ORG: ${GH_ORG:-}
       GH_PROJECT: ${GH_PROJECT:-}
       GH_TOKEN: ${GH_TOKEN:-}
+      DOCS_MCP_URL: ${DOCS_MCP_URL:-http://host.docker.internal:6280/sse}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}
       INFISICAL_ENV: ${INFISICAL_ENV:-dev}
       INFISICAL_DOMAIN: ${INFISICAL_DOMAIN:-}

@@ -45,7 +45,17 @@ DOCKER_VOLUME_DIRECTORY=../milvus
 docker compose up -d --build
 ```
 
-4. Verify:
+4. Run post-compose setup (preflight + register projects):
+
+```bash
+./scripts/setup.sh
+# Or checks only:
+./scripts/setup.sh preflight
+# Register all mounted git repos without prompts:
+./scripts/setup.sh projects local --all --yes
+```
+
+5. Verify:
 
 ```bash
 # Milvus health (when MILVUS_HEALTH_PUBLISH_PORT is set in .env)
@@ -74,6 +84,7 @@ All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .
 | `MILVUS_TOKEN` | Milvus auth (default `local` for standalone) |
 | `CONFIG_REPO`, `CONFIG_REF` | GitHub config clone at build time |
 | `OPENCODE_PUBLISH_PORT` | Host port for OpenCode (default `4096`; bind e.g. `127.0.0.1:4096` to limit exposure) |
+| `OPENCODE_APPS_DIR` | Host path mounted at `/workspace/apps` (local: `~/05_Repos/01_PROJECTS/apps`; cloud: e.g. `/data/opencode/apps`) |
 | `MILVUS_PUBLISH_PORT` | Host port for Milvus gRPC (empty = not published) |
 | `MILVUS_HEALTH_PUBLISH_PORT` | Host port for Milvus health endpoint |
 | `MINIO_API_PUBLISH_PORT` | Host port for MinIO API |
@@ -122,11 +133,58 @@ opencode attach http://opencode-server:4096
 
 For Twingate-only access you do not need to reach OpenCode on the host — use the Twingate resource. To limit exposure to localhost, set `OPENCODE_PUBLISH_PORT=127.0.0.1:4096` in `.env`.
 
+## Post-compose setup
+
+After `docker compose up`, run [`scripts/setup.sh`](scripts/setup.sh). It runs in two phases:
+
+1. **Preflight** — env, container health, workspace mount, Milvus, `gh` auth/scopes, providers, enabled MCPs
+2. **Projects** — discover repos, multi-select (or `--all`), register with the OpenCode server
+
+```bash
+./scripts/setup.sh                    # preflight, then choose local or github mode
+./scripts/setup.sh preflight          # checks only
+./scripts/setup.sh projects local     # register git roots from mounted /workspace/apps
+./scripts/setup.sh projects github    # clone GH_ORG repos into /workspace/apps, then register
+./scripts/setup.sh projects local --all --yes --skip-preflight
+```
+
+Flags: `--force` (continue after preflight failures), `--dry-run`, `--host URL`, `--json` (preflight summary), `--include-archived` (github mode).
+
+### Preflight
+
+Checks print `[ok]`, `[warn]`, or `[fail]` with fix hints. Failures block project setup unless `--force`.
+
+| Area | What it checks |
+|------|----------------|
+| Env | `.env`, `OPENCODE_SERVER_PASSWORD`, optional keys |
+| Stack | `opencode-server` running, `/global/health`, workspace mount, Milvus |
+| GitHub | `gh auth status`, scopes (`repo`, `read:org`), `GH_ORG` access |
+| Providers | `OPENROUTER_API_KEY` or connected providers |
+| MCPs | `GET /mcp` for each enabled server (claude-context, docs-mcp-server, OAuth MCPs) |
+
+### MCP OAuth (e.g. Cloudflare)
+
+OAuth MCPs in a headless container cannot use “click here” in the web UI. Preflight flags `needs_auth` and prints:
+
+```bash
+docker exec -it opencode-server opencode mcp auth <server-name>
+docker exec -it opencode-server opencode mcp debug <server-name>
+docker exec opencode-server opencode mcp list
+```
+
+Tokens persist in the `opencode-data` volume (`mcp-auth.json`). Preflight can offer to run auth interactively.
+
+### Project modes
+
+**Local** — one mount exposes all nested repos; no per-repo volume mounts needed. The script finds `.git` roots under `/workspace/apps` and registers each selected path (e.g. `/workspace/apps/fidget/fidget-web`).
+
+**GitHub** — requires `GH_TOKEN` + `GH_ORG`. Clones into flat `/workspace/apps/<repo>` (cloud: set `OPENCODE_APPS_DIR=/data/opencode/apps` on the host so clones persist). Re-run is idempotent: existing dirs get `git fetch`, already-registered projects are skipped.
+
+OpenCode registers **git repository roots**, not parent folders. Registration creates a seed session per repo so projects appear in the picker for all clients attaching to this server.
+
 ## Project workspace
 
-Apps are mounted at `/workspace/apps` (default host path: `~/05_Repos/01_PROJECTS/apps`).
-
-OpenCode registers **git repository roots**, not parent folders:
+Apps are mounted at `/workspace/apps` (default host path: `~/05_Repos/01_PROJECTS/apps`). Use `./scripts/setup.sh` to register repos — manual registration is only needed if you skip setup.
 
 - Good: `/workspace/apps/fidget/fidget-web`
 - Bad: `/workspace/apps/fidget`
@@ -163,6 +221,10 @@ Local `opencode` and the Docker server can share the same vector index.
 | Container name conflict | `docker compose down` in `../twingate` and `../milvus` |
 | Build fails on `git clone` | Verify `CONFIG_REF` branch exists on GitHub |
 | Claude Context fails | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network |
+| OpenRouter "missing authentication header" | Set `OPENROUTER_API_KEY` in `.env` (or configure via server UI `/connect`) |
+| docs-mcp-server fails | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on this Mac, or LAN IP) |
+| Projects not in picker | Run `./scripts/setup.sh projects local` to register git roots |
+| MCP needs auth (Cloudflare etc.) | `docker exec -it opencode-server opencode mcp auth <name>` — see Post-compose setup |
 | Twingate can't reach server | Both services on `opencode-net`; resource address is `opencode-server:4096` |
 | Provider auth missing | Fresh `opencode-data` volume — set API keys in `.env`/Infisical or migrate auth data |
 
@@ -172,6 +234,9 @@ Local `opencode` and the Docker server can share the same vector index.
 .
 ├── Dockerfile
 ├── docker-compose.yml
+├── scripts/
+│   ├── setup.sh                 # Post-compose: preflight + project registration
+│   └── lib/                     # opencode-api, preflight, select helpers
 ├── docker/entrypoint.sh       # Infisical wrapper + merge-config + container defaults
 ├── docker/merge-config.py     # Deep-merge overrides into cloned opencode.json
 ├── overrides/opencode.server.json

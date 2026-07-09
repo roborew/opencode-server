@@ -11,6 +11,7 @@ ENV PATH="/root/.opencode/bin:/root/.local/bin:${PATH}"
 ENV INFISICAL_DISABLE_UPDATE_CHECK=true
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     ca-certificates \
     curl \
     git \
@@ -52,6 +53,9 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && apt-get install -y /tmp/infisical.deb \
     && rm -f /tmp/infisical.deb \
     && rm -rf /var/lib/apt/lists/*
+
+# claude-context MCP (preinstall — npx at runtime races on native tree-sitter deps)
+RUN npm install -g @zilliz/claude-context-mcp@latest
 
 # OpenCode CLI
 RUN curl -fsSL https://opencode.ai/install | bash
