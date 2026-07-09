@@ -70,7 +70,7 @@ COPY docker/entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
 COPY docker/merge-config.py /usr/local/bin/merge-config.py
 RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/merge-config.py
 
-EXPOSE 4096
+EXPOSE 4097
 
 ENTRYPOINT ["/usr/local/bin/opencode-entrypoint.sh"]
-CMD ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"]
+CMD ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4097"]

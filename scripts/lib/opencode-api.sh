@@ -38,8 +38,8 @@ load_env() {
 opencode_base_url() {
   local host="${OPENCODE_HOST:-}"
   if [[ -z "$host" ]]; then
-    local port="${OPENCODE_PUBLISH_PORT:-4096}"
-    # Strip host:port binding if present (e.g. 127.0.0.1:4096)
+    local port="${OPENCODE_PUBLISH_PORT:-4097}"
+    # Strip host:port binding if present (e.g. 127.0.0.1:4097)
     port="${port##*:}"
     host="http://127.0.0.1:${port}"
   fi

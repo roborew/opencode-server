@@ -8,8 +8,8 @@ Self-contained Docker Compose stack for a headless OpenCode server, Twingate rem
 
 | Service | Role |
 |---------|------|
-| `opencode-server` | `opencode serve` on `0.0.0.0:4096` |
-| `twingate-connector` | Proxies remote clients to `opencode-server:4096` |
+| `opencode-server` | `opencode serve` on `0.0.0.0:4097` |
+| `twingate-connector` | Proxies remote clients to `opencode.home.internal:4097` |
 | `milvus-standalone` + etcd + minio | Vector store for `claude-context` MCP |
 
 ## Prerequisites
@@ -62,7 +62,7 @@ docker compose up -d --build
 curl -sf http://localhost:9091/healthz
 
 # OpenCode (when OPENCODE_PUBLISH_PORT is set in .env)
-curl -sf -u "opencode:YOUR_PASSWORD" http://localhost:4096/global/health
+curl -sf -u "opencode:YOUR_PASSWORD" http://localhost:4097/global/health
 
 # Or via Twingate resource (see below)
 ```
@@ -83,7 +83,7 @@ All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .
 | `GH_TOKEN`, `GH_ORG`, `GH_PROJECT` | GitHub CLI / project board workflows |
 | `MILVUS_TOKEN` | Milvus auth (default `local` for standalone) |
 | `CONFIG_REPO`, `CONFIG_REF` | GitHub config clone at build time |
-| `OPENCODE_PUBLISH_PORT` | Host port for OpenCode (default `4096`; bind e.g. `127.0.0.1:4096` to limit exposure) |
+| `OPENCODE_PUBLISH_PORT` | Host port for OpenCode (default `4097`; avoid `4096` — Kilo) |
 | `OPENCODE_APPS_DIR` | Host path mounted at `/workspace/apps` (local: `~/05_Repos/01_PROJECTS/apps`; cloud: e.g. `/data/opencode/apps`) |
 | `MILVUS_PUBLISH_PORT` | Host port for Milvus gRPC (empty = not published) |
 | `MILVUS_HEALTH_PUBLISH_PORT` | Host port for Milvus health endpoint |
@@ -111,27 +111,70 @@ Store in Infisical: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, `OPENAI_API_KEY`, 
 
 Set `INFISICAL_USE_CLI=false` to force local `.env` only.
 
-## Twingate resource
+## Twingate resource (Docker-native — laptop or cloud)
 
-In the Twingate Admin Console:
+**Goal:** Twingate clients reach OpenCode by a **stable Docker DNS name**, wherever the laptop (or droplet) is. No LAN IP. Same resource works on Mac Docker Desktop and DigitalOcean.
 
-1. Use the remote network for this connector.
-2. Add a **Resource** with address: `opencode-server:4096`
-3. Assign to your user/group.
+### How it works
 
-From any machine on the Twingate network:
+```text
+Phone / remote client
+  → Twingate Client
+  → Twingate Connector (container on opencode-net)
+  → Docker DNS resolves opencode.home.internal
+  → opencode-server:4097
+```
+
+The connector and OpenCode share `opencode-net`. Docker’s embedded DNS (`127.0.0.11`) resolves service names and aliases. **Do not set `TWINGATE_DNS` to public resolvers** (e.g. `1.1.1.1`) — that bypasses Docker DNS and breaks internal names.
+
+### Admin Console
+
+1. Remote network: this connector’s network  
+2. **Standard resource**  
+3. **Address:** `opencode.home.internal` (no `http://`, no port in the address field)  
+4. **TCP port:** `4097`  
+5. Security policy: Default  
+6. Assign to your user/group  
+
+### Connect (phone / Mac / anywhere with Twingate)
+
+```text
+http://opencode.home.internal:4097
+```
 
 ```bash
-# OpenAPI spec
-open http://opencode-server:4096/doc
-
-# Attach TUI
-opencode attach http://opencode-server:4096
+opencode attach http://opencode.home.internal:4097
 # Username: opencode (or OPENCODE_SERVER_USERNAME)
 # Password: OPENCODE_SERVER_PASSWORD
 ```
 
-For Twingate-only access you do not need to reach OpenCode on the host — use the Twingate resource. To limit exposure to localhost, set `OPENCODE_PUBLISH_PORT=127.0.0.1:4096` in `.env`.
+### Verify from the connector (must be 200 with auth)
+
+```bash
+docker compose up -d --build opencode twingate-connector
+
+docker run --rm --network container:twingate-connector curlimages/curl:8.7.1 \
+  -sf -u "opencode:YOUR_PASSWORD" http://opencode.home.internal:4097/global/health
+```
+
+Also resolvable: `opencode-server` and compose service name `opencode` (same IP). Prefer the FQDN alias for Twingate.
+
+### Ports
+
+| Port | Role |
+|------|------|
+| **4097** | OpenCode (host publish + container listen) — chosen to avoid Kilo/`4096` |
+| 4096 | Leave free for Kilo / other tools |
+
+Set `OPENCODE_PUBLISH_PORT=4097` in `.env` (default in compose).
+
+### Localhost on the Mac
+
+```bash
+curl -sf -u "opencode:YOUR_PASSWORD" http://127.0.0.1:4097/global/health
+```
+
+LAN IP (`http://192.168.1.71:4097`) still works on the home network but is **not** the Twingate resource — it breaks when the laptop leaves that LAN.
 
 ## Post-compose setup
 
@@ -225,7 +268,8 @@ Local `opencode` and the Docker server can share the same vector index.
 | docs-mcp-server fails | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on this Mac, or LAN IP) |
 | Projects not in picker | Run `./scripts/setup.sh projects local` to register git roots |
 | MCP needs auth (Cloudflare etc.) | `docker exec -it opencode-server opencode mcp auth <name>` — see Post-compose setup |
-| Twingate can't reach server | Both services on `opencode-net`; resource address is `opencode-server:4096` |
+| Twingate can't reach server | Resource = `opencode.home.internal`, TCP `4097`; do **not** set `TWINGATE_DNS` to public DNS; connector + OpenCode on `opencode-net` |
+| Port conflict with Kilo | OpenCode uses **4097**; leave 4096 for Kilo |
 | Provider auth missing | Fresh `opencode-data` volume — set API keys in `.env`/Infisical or migrate auth data |
 
 ## Files

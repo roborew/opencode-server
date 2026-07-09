@@ -41,9 +41,13 @@ services:
       milvus-standalone:
         condition: service_healthy
     ports:
-      - "${OPENCODE_PUBLISH_PORT:-4096}:4096"
+      # Host + container port 4097 — avoids Kilo/other tools on 4096
+      - "${OPENCODE_PUBLISH_PORT:-4097}:4097"
     networks:
-      - opencode-net
+      opencode-net:
+        aliases:
+          # FQDN for Twingate resource (same on laptop + cloud)
+          - opencode.home.internal
 
   twingate-connector:
     image: twingate/connector:1
@@ -58,7 +62,8 @@ services:
       TWINGATE_LABEL_HOSTNAME: opencode-connector
       TWINGATE_LOG_ANALYTICS: v2
       TWINGATE_LOG_LEVEL: "3"
-      TWINGATE_DNS: 1.1.1.1
+      # Do NOT set TWINGATE_DNS to 1.1.1.1/8.8.8.8 — that bypasses Docker
+      # embedded DNS and breaks resolving opencode.home.internal / service names.
     sysctls:
       net.ipv4.ping_group_range: "0 2147483647"
     networks:
