@@ -92,6 +92,8 @@ All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .
 | `MILVUS_HEALTH_PUBLISH_PORT` | Host port for Milvus health endpoint |
 | `MINIO_API_PUBLISH_PORT` | Host port for MinIO API |
 | `MINIO_CONSOLE_PUBLISH_PORT` | Host port for MinIO console |
+| `DOCKER_HOST_INTERNAL` | Hostname containers use to reach the Docker host (default `host.docker.internal`) |
+| `LOCALHOST_REWRITE` | Rewrite loopback URLs to `DOCKER_HOST_INTERNAL` before tools run (default `1`; set `0` to disable) |
 
 ### Deployed environments (Infisical)
 
@@ -363,6 +365,21 @@ export MILVUS_TOKEN=local
 
 Local `opencode` and the Docker server can share the same vector index.
 
+## Localhost URLs inside Docker
+
+Inside the container, `localhost` / `127.0.0.1` is the **container**, not your Mac or droplet. Shared links like `http://localhost:3000` would otherwise 404 when OpenCode `webfetch` or shell `curl` runs in Docker.
+
+An OpenCode plugin installed at container startup rewrites loopback URLs to `host.docker.internal` (or `DOCKER_HOST_INTERNAL`) before tools execute. External and LAN URLs are unchanged.
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `DOCKER_HOST_INTERNAL` | `host.docker.internal` | Target host for rewritten loopback URLs |
+| `LOCALHOST_REWRITE` | `1` | Set to `0` to disable rewriting |
+
+Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and DigitalOcean match Docker Desktop.
+
+**Requirements:** The service must be reachable from the container via the Docker host gateway. Docker Desktop on Mac can usually reach host ports bound to `127.0.0.1`. On Linux, bind the service to `0.0.0.0` or publish the port if `host.docker.internal` cannot reach it.
+
 ## Troubleshooting
 
 | Issue | Check |
@@ -372,6 +389,7 @@ Local `opencode` and the Docker server can share the same vector index.
 | Claude Context fails | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network |
 | OpenRouter "missing authentication header" | Set `OPENROUTER_API_KEY` in `.env` (or configure via server UI `/connect`) |
 | docs-mcp-server fails | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on this Mac, or LAN IP) |
+| localhost link 404 from agent | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
 | Projects not in picker | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `/workspace/apps/...` |
 | Host cannot resolve opencode.home.internal | `./scripts/setup.sh bootstrap` or add `127.0.0.1 opencode.home.internal` to `/etc/hosts` |
 | MCP needs auth (Cloudflare etc.) | Publish `127.0.0.1:19876`; on DO use `ssh -L 19876:127.0.0.1:19876`; then `docker exec -it opencode-server opencode mcp auth <name>` |
@@ -390,6 +408,7 @@ Local `opencode` and the Docker server can share the same vector index.
 │   └── lib/                     # opencode-api, preflight, select, client-bootstrap helpers
 ├── docker/entrypoint.sh       # Infisical wrapper + merge-config + container defaults
 ├── docker/merge-config.py     # Deep-merge overrides into cloned opencode.json
+├── docker/plugins/            # OpenCode plugins (localhost → host.docker.internal)
 ├── overrides/opencode.server.json
 └── .env.example
 ```

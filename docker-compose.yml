@@ -23,6 +23,8 @@ services:
       GH_PROJECT: ${GH_PROJECT:-}
       GH_TOKEN: ${GH_TOKEN:-}
       DOCS_MCP_URL: ${DOCS_MCP_URL:-http://host.docker.internal:6280/sse}
+      DOCKER_HOST_INTERNAL: ${DOCKER_HOST_INTERNAL:-host.docker.internal}
+      LOCALHOST_REWRITE: ${LOCALHOST_REWRITE:-1}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}
       INFISICAL_ENV: ${INFISICAL_ENV:-dev}
       INFISICAL_DOMAIN: ${INFISICAL_DOMAIN:-}
@@ -47,6 +49,8 @@ services:
       # socat bridges eth0→127.0.0.1). Default bind is loopback-only so DO
       # droplets are not exposed publicly — use SSH -L from a laptop browser.
       - "${OPENCODE_OAUTH_CALLBACK_PUBLISH:-127.0.0.1:19876}:19876"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       opencode-net:
         aliases:

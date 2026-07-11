@@ -7,6 +7,22 @@ export OPENCODE_OVERRIDE="${OPENCODE_OVERRIDE:-/root/overrides/opencode.server.j
 export MILVUS_ADDRESS="${MILVUS_ADDRESS:-http://milvus-standalone:19530}"
 export PATH="/root/.config/opencode/bin:/root/.opencode/bin:/root/.local/bin:${PATH}"
 
+# Deployment plugins (e.g. localhost → host.docker.internal URL rewrite)
+install_override_plugins() {
+  local src="/root/overrides/plugins"
+  local dest="${OPENCODE_CONFIG_DIR}/plugins"
+  if [[ ! -d "$src" ]]; then
+    return 0
+  fi
+  mkdir -p "$dest"
+  cp -f "$src"/*.js "$dest"/ 2>/dev/null || true
+  if compgen -G "$dest"/*.js >/dev/null; then
+    echo "opencode-entrypoint: installed plugins from ${src} → ${dest}" >&2
+  fi
+}
+
+install_override_plugins
+
 # Apply deployment overrides into cloned opencode.json (OPENCODE_CONFIG env alone does not deep-merge MCP)
 python3 /usr/local/bin/merge-config.py
 unset OPENCODE_CONFIG

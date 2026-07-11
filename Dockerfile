@@ -67,6 +67,7 @@ RUN git clone --depth 1 --branch "${CONFIG_REF}" "${CONFIG_REPO}" /root/.config/
 
 # Deployment-owned overrides (not from config repo)
 COPY overrides/ /root/overrides/
+COPY docker/plugins/ /root/overrides/plugins/
 COPY docker/entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
 COPY docker/merge-config.py /usr/local/bin/merge-config.py
 RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/merge-config.py
