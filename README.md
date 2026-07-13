@@ -2,7 +2,24 @@
 
 Self-contained Docker Compose stack for a headless OpenCode server, Twingate remote access, and Milvus-backed `claude-context` indexing.
 
-**Build and run only from this directory.** Agents, skills, and `opencode.json` are cloned from [github.com/roborew/opencode](https://github.com/roborew/opencode) at image build time. Your local `~/.config/opencode` checkout is never modified.
+**Build and run only from this directory.** Agents, skills, and `opencode.json` are cloned from [github.com/roborew/opencode-config](https://github.com/roborew/opencode-config) at image build time (`CONFIG_REPO` / `CONFIG_REF`). Your local `~/.config/opencode` checkout is never mounted into the image.
+
+## Claude Context indexing (host vs Docker)
+
+Semantic indexing is optional — OpenCode works without it; it only speeds discovery. **Do not run host and Docker `claude-context` at the same time.** Desktop loading host MCP while attached to this server can spawn dozens of `npx` processes and freeze the UI.
+
+| Mode | Where indexing runs | What to set |
+|------|---------------------|-------------|
+| **Desktop / CLI → this Docker server** (recommended with this stack) | Container MCP → Milvus (`COMPOSE_PROFILES=milvus`) | Keep host `mcp.claude-context.enabled` **`false`** in `~/.config/opencode/opencode.json`. Server enables it via [`overrides/opencode.server.json`](overrides/opencode.server.json). |
+| **Local only** (no Docker server; Desktop/CLI on the host) | Host MCP in `~/.config/opencode` | Set `mcp.claude-context.enabled` to **`true`** in that checkout. See the [config repo README](https://github.com/roborew/opencode-config#claude-context-indexing-host-vs-docker-server). |
+
+```text
+Desktop ──HTTP──► opencode-server :4097 ──► claude-context (container) ──► Milvus
+                         ▲
+                         └── do NOT also enable host claude-context
+```
+
+After changing `CONFIG_REPO` / `CONFIG_REF`, rebuild so the image picks up config: `docker compose build --no-cache opencode && docker compose up -d opencode` (never `down -v`). Diagnose freezes with `./scripts/doctor-perf.sh`.
 
 ## What's in the stack
 
@@ -86,6 +103,7 @@ All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .
 | `CODERABBIT_API_KEY`               | CodeRabbit CLI agent reviews (Agentic API key — see below)                                                       |
 | `MILVUS_TOKEN`                     | Milvus auth (default `local` for standalone)                                                                     |
 | `CONFIG_REPO`, `CONFIG_REF`        | GitHub config clone at build time                                                                                |
+| `COMPOSE_PROFILES`                 | Default `milvus` starts etcd/minio/milvus; clear to run OpenCode without the vector stack                        |
 | `OPENCODE_PUBLISH_PORT`            | Host port for OpenCode (default `4097`; avoid `4096` — Kilo)                                                     |
 | `OPENCODE_OAUTH_CALLBACK_PUBLISH`  | Host bind for MCP OAuth callback (default `127.0.0.1:19876`)                                                     |
 | `OPENCODE_APPS_DIR`                | Host path mounted at `/workspace/apps` (default `${HOME}/projects`; e.g. `~/projects` or `/data/opencode/apps`) |
@@ -415,7 +433,10 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Container name conflict                    | `docker compose down` in `../twingate` and `../milvus`                                                                                          |
 | Build fails on `git clone`                 | Verify `CONFIG_REF` branch exists on GitHub                                                                                                     |
-| Claude Context fails                       | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network                                                                |
+| Config changes not in container            | Server config is cloned at **image build** from `CONFIG_REPO`/`CONFIG_REF`. Rebuild: `docker compose build --no-cache opencode && docker compose up -d opencode`. Do **not** `down -v` (drops sessions). Host `~/.config/opencode` is never mounted. |
+| Desktop freezes / high host RAM            | Usually host + Docker `claude-context` both on — see [Claude Context indexing](#claude-context-indexing-host-vs-docker). Quit Desktop, `pkill -f claude-context-mcp`, set host `mcp.claude-context.enabled` to `false`. Run `./scripts/doctor-perf.sh` while glitching. |
+| Claude Context fails                       | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network; `COMPOSE_PROFILES=milvus`                                                                      |
+| Want lighter stack (no Milvus)             | Clear profile: `COMPOSE_PROFILES= docker compose up -d` (etcd/minio/milvus are under the `milvus` profile). Re-enable with `COMPOSE_PROFILES=milvus`. |
 | OpenRouter "missing authentication header" | Set `OPENROUTER_API_KEY` in `.env` (or configure via server UI `/connect`)                                                                      |
 | docs-mcp-server fails                      | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on this Mac, or LAN IP)                                         |
 | localhost link 404 from agent              | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
@@ -437,10 +458,13 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 ├── docker-compose.yml
 ├── scripts/
 │   ├── setup.sh                 # Post-compose: preflight + project sync + hosts
+│   ├── doctor-perf.sh           # Host MCP leak / docker stats / Desktop app-data snapshot
 │   └── lib/                     # opencode-api, preflight, select, client-bootstrap helpers
 ├── docker/entrypoint.sh       # Infisical wrapper + merge-config + container defaults
 ├── docker/merge-config.py     # Deep-merge overrides into cloned opencode.json
 ├── docker/plugins/            # OpenCode plugins (localhost → host.docker.internal)
-├── overrides/opencode.server.json
-└── .env.example
+├── overrides/
+│   ├── README.md              # Host vs server claude-context (indexing) control
+│   └── opencode.server.json   # MCP/workspace overrides merged at container start
+├── .env.example
 ```

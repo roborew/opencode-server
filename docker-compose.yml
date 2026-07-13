@@ -52,6 +52,8 @@ services:
     depends_on:
       milvus-standalone:
         condition: service_healthy
+        # Allow `COMPOSE_PROFILES=` (no milvus) for a lighter stack when not indexing.
+        required: false
     ports:
       # Host + container port 4097 — avoids Kilo/other tools on 4096
       - "${OPENCODE_PUBLISH_PORT:-4097}:4097"
@@ -88,6 +90,7 @@ services:
       - opencode-net
 
   etcd:
+    profiles: ["milvus"]
     container_name: milvus-etcd
     restart: unless-stopped
     image: quay.io/coreos/etcd:v3.5.25
@@ -108,6 +111,7 @@ services:
       - opencode-net
 
   minio:
+    profiles: ["milvus"]
     container_name: milvus-minio
     restart: unless-stopped
     image: minio/minio:RELEASE.2024-12-18T13-15-44Z
@@ -129,6 +133,7 @@ services:
       - opencode-net
 
   milvus-standalone:
+    profiles: ["milvus"]
     container_name: milvus-standalone
     restart: unless-stopped
     image: milvusdb/milvus:v2.6.12
