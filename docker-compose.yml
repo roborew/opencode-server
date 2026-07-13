@@ -22,6 +22,7 @@ services:
       GH_ORG: ${GH_ORG:-}
       GH_PROJECT: ${GH_PROJECT:-}
       GH_TOKEN: ${GH_TOKEN:-}
+      CODERABBIT_API_KEY: ${CODERABBIT_API_KEY:-}
       DOCS_MCP_URL: ${DOCS_MCP_URL:-http://host.docker.internal:6280/sse}
       DOCKER_HOST_INTERNAL: ${DOCKER_HOST_INTERNAL:-host.docker.internal}
       LOCALHOST_REWRITE: ${LOCALHOST_REWRITE:-1}
@@ -36,7 +37,7 @@ services:
       SSH_AUTH_SOCK: /ssh-agent
     volumes:
       - opencode-data:/root/.local/share/opencode
-      - ${OPENCODE_APPS_DIR:-${HOME}/05_Repos/01_PROJECTS/apps}:/workspace/apps:delegated
+      - ${OPENCODE_APPS_DIR:-${HOME}/projects}:/workspace/apps:delegated
       - ${SSH_AUTH_SOCK}:/ssh-agent
     working_dir: /workspace/apps
     depends_on:

@@ -26,6 +26,7 @@ run_preflight() {
   check_milvus
   check_ssh_agent
   check_gh_auth
+  check_coderabbit_auth
   check_providers
   check_mcps
 
@@ -64,6 +65,7 @@ check_optional_env() {
   [[ -z "${OPENROUTER_API_KEY:-}" ]] && missing+=("OPENROUTER_API_KEY (model provider)")
   [[ -z "${OPENAI_API_KEY:-}" ]] && missing+=("OPENAI_API_KEY (claude-context embeddings)")
   [[ -z "${GH_TOKEN:-}" ]] && missing+=("GH_TOKEN (GitHub CLI)")
+  [[ -z "${CODERABBIT_API_KEY:-}" ]] && missing+=("CODERABBIT_API_KEY (CodeRabbit CLI)")
   [[ -z "${GH_ORG:-}" ]] && missing+=("GH_ORG (org repo listing)")
   [[ -z "${DOCS_MCP_URL:-}" ]] && missing+=("DOCS_MCP_URL (docs MCP)")
   [[ -z "${TWINGATE_NETWORK:-}" ]] && missing+=("TWINGATE_* (remote access)")
@@ -198,6 +200,23 @@ check_gh_auth() {
       preflight_record fail "cannot list repos in ${GH_ORG}" \
         "grant Contents (and Metadata) on the org's repositories"
     fi
+  fi
+}
+
+check_coderabbit_auth() {
+  if ! container_running; then
+    return
+  fi
+  load_env 2>/dev/null || return
+  if [[ -z "${CODERABBIT_API_KEY:-}" ]]; then
+    preflight_record warn "CODERABBIT_API_KEY not set — CodeRabbit CLI auth skipped"
+    return
+  fi
+  if docker_exec coderabbit auth status >/dev/null 2>&1; then
+    preflight_record ok "coderabbit auth (Agentic API key)"
+  else
+    preflight_record fail "coderabbit auth failed" \
+      "set CODERABBIT_API_KEY in .env (Agentic key from CodeRabbit dashboard)"
   fi
 }
 

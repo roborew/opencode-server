@@ -32,6 +32,11 @@ if [[ -n "${GH_TOKEN:-}" ]]; then
   echo "${GH_TOKEN}" | gh auth login --with-token 2>/dev/null || true
 fi
 
+# CodeRabbit CLI token auth when CODERABBIT_API_KEY is set
+if [[ -n "${CODERABBIT_API_KEY:-}" ]]; then
+  coderabbit auth login --api-key "${CODERABBIT_API_KEY}" 2>/dev/null || true
+fi
+
 # MCP OAuth listens on 127.0.0.1:19876 inside the container. Host browsers (and
 # SSH -L tunnels) hit the published eth0 port, so bridge eth IP → loopback.
 # Bind the container eth IP only — not 0.0.0.0 — so OpenCode can still bind loopback.

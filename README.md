@@ -6,11 +6,11 @@ Self-contained Docker Compose stack for a headless OpenCode server, Twingate rem
 
 ## What's in the stack
 
-| Service | Role |
-|---------|------|
-| `opencode-server` | `opencode serve` on `0.0.0.0:4097` |
-| `twingate-connector` | Proxies remote clients to `opencode.home.internal:4097` |
-| `milvus-standalone` + etcd + minio | Vector store for `claude-context` MCP |
+| Service                            | Role                                                    |
+| ---------------------------------- | ------------------------------------------------------- |
+| `opencode-server`                  | `opencode serve` on `0.0.0.0:4097`                      |
+| `twingate-connector`               | Proxies remote clients to `opencode.home.internal:4097` |
+| `milvus-standalone` + etcd + minio | Vector store for `claude-context` MCP                   |
 
 ## Prerequisites
 
@@ -75,25 +75,26 @@ curl -sf -u "opencode:YOUR_PASSWORD" http://localhost:4097/global/health
 
 All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .env`.
 
-| Variable | Purpose |
-|----------|---------|
-| `OPENCODE_SERVER_PASSWORD` | HTTP basic auth for the server |
-| `OPENCODE_SERVER_USERNAME` | Basic auth username (default `opencode`) |
-| `TWINGATE_*` | Connector credentials |
-| `OPENAI_API_KEY` | Claude Context embeddings |
-| `OPENROUTER_API_KEY` | Model provider (if not in persisted auth volume) |
-| `GH_TOKEN`, `GH_ORG`, `GH_PROJECT` | GitHub CLI / project board workflows (fine-grained PAT preferred — see below) |
-| `MILVUS_TOKEN` | Milvus auth (default `local` for standalone) |
-| `CONFIG_REPO`, `CONFIG_REF` | GitHub config clone at build time |
-| `OPENCODE_PUBLISH_PORT` | Host port for OpenCode (default `4097`; avoid `4096` — Kilo) |
-| `OPENCODE_OAUTH_CALLBACK_PUBLISH` | Host bind for MCP OAuth callback (default `127.0.0.1:19876`) |
-| `OPENCODE_APPS_DIR` | Host path mounted at `/workspace/apps` (local: `~/05_Repos/01_PROJECTS/apps`; cloud: e.g. `/data/opencode/apps`) |
-| `MILVUS_PUBLISH_PORT` | Host port for Milvus gRPC (empty = not published) |
-| `MILVUS_HEALTH_PUBLISH_PORT` | Host port for Milvus health endpoint |
-| `MINIO_API_PUBLISH_PORT` | Host port for MinIO API |
-| `MINIO_CONSOLE_PUBLISH_PORT` | Host port for MinIO console |
-| `DOCKER_HOST_INTERNAL` | Hostname containers use to reach the Docker host (default `host.docker.internal`) |
-| `LOCALHOST_REWRITE` | Rewrite loopback URLs to `DOCKER_HOST_INTERNAL` before tools run (default `1`; set `0` to disable) |
+| Variable                           | Purpose                                                                                                          |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `OPENCODE_SERVER_PASSWORD`         | HTTP basic auth for the server                                                                                   |
+| `OPENCODE_SERVER_USERNAME`         | Basic auth username (default `opencode`)                                                                         |
+| `TWINGATE_*`                       | Connector credentials                                                                                            |
+| `OPENAI_API_KEY`                   | Claude Context embeddings                                                                                        |
+| `OPENROUTER_API_KEY`               | Model provider (if not in persisted auth volume)                                                                 |
+| `GH_TOKEN`, `GH_ORG`, `GH_PROJECT` | GitHub CLI / project board workflows (fine-grained PAT preferred — see below)                                    |
+| `CODERABBIT_API_KEY`               | CodeRabbit CLI agent reviews (Agentic API key — see below)                                                       |
+| `MILVUS_TOKEN`                     | Milvus auth (default `local` for standalone)                                                                     |
+| `CONFIG_REPO`, `CONFIG_REF`        | GitHub config clone at build time                                                                                |
+| `OPENCODE_PUBLISH_PORT`            | Host port for OpenCode (default `4097`; avoid `4096` — Kilo)                                                     |
+| `OPENCODE_OAUTH_CALLBACK_PUBLISH`  | Host bind for MCP OAuth callback (default `127.0.0.1:19876`)                                                     |
+| `OPENCODE_APPS_DIR`                | Host path mounted at `/workspace/apps` (local: `~/05_Repos/01_PROJECTS/apps`; cloud: e.g. `/data/opencode/apps`) |
+| `MILVUS_PUBLISH_PORT`              | Host port for Milvus gRPC (empty = not published)                                                                |
+| `MILVUS_HEALTH_PUBLISH_PORT`       | Host port for Milvus health endpoint                                                                             |
+| `MINIO_API_PUBLISH_PORT`           | Host port for MinIO API                                                                                          |
+| `MINIO_CONSOLE_PUBLISH_PORT`       | Host port for MinIO console                                                                                      |
+| `DOCKER_HOST_INTERNAL`             | Hostname containers use to reach the Docker host (default `host.docker.internal`)                                |
+| `LOCALHOST_REWRITE`                | Rewrite loopback URLs to `DOCKER_HOST_INTERNAL` before tools run (default `1`; set `0` to disable)               |
 
 ### Deployed environments (Infisical)
 
@@ -104,15 +105,15 @@ The image includes the Infisical CLI. The entrypoint mirrors [fidget-web/docker/
 
 **Infisical bootstrap** (set on the host / platform; secrets live in Infisical):
 
-| Variable | Description |
-|----------|-------------|
-| `INFISICAL_PROJECT_ID` | Infisical project ID |
-| `INFISICAL_ENV` | Environment slug (`dev`, `staging`, `prod`) |
-| `INFISICAL_DOMAIN` or `INFISICAL_API_URL` | e.g. `https://eu.infisical.com` |
-| `INFISICAL_CLIENT_ID` + `INFISICAL_CLIENT_SECRET` | Universal Auth machine identity |
-| `INFISICAL_TOKEN` | Alternative to client id/secret |
+| Variable                                          | Description                                 |
+| ------------------------------------------------- | ------------------------------------------- |
+| `INFISICAL_PROJECT_ID`                            | Infisical project ID                        |
+| `INFISICAL_ENV`                                   | Environment slug (`dev`, `staging`, `prod`) |
+| `INFISICAL_DOMAIN` or `INFISICAL_API_URL`         | e.g. `https://eu.infisical.com`             |
+| `INFISICAL_CLIENT_ID` + `INFISICAL_CLIENT_SECRET` | Universal Auth machine identity             |
+| `INFISICAL_TOKEN`                                 | Alternative to client id/secret             |
 
-Store in Infisical: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GH_*`, etc.
+Store in Infisical: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GH_*`, `CODERABBIT_API_KEY`, etc.
 
 Set `INFISICAL_USE_CLI=false` to force local `.env` only.
 
@@ -134,12 +135,12 @@ The connector and OpenCode share `opencode-net`. Docker’s embedded DNS (`127.0
 
 ### Admin Console
 
-1. Remote network: this connector’s network  
-2. **Standard resource**  
-3. **Address:** `opencode.home.internal` (no `http://`, no port in the address field)  
-4. **TCP port:** `4097`  
-5. Security policy: Default  
-6. Assign to your user/group  
+1. Remote network: this connector’s network
+2. **Standard resource**
+3. **Address:** `opencode.home.internal` (no `http://`, no port in the address field)
+4. **TCP port:** `4097`
+5. Security policy: Default
+6. Assign to your user/group
 
 ### Connect (phone / Mac / anywhere with Twingate)
 
@@ -166,11 +167,11 @@ Also resolvable: `opencode-server` and compose service name `opencode` (same IP)
 
 ### Ports
 
-| Port | Role |
-|------|------|
-| **4097** | OpenCode (host publish + container listen) — chosen to avoid Kilo/`4096` |
+| Port      | Role                                                                              |
+| --------- | --------------------------------------------------------------------------------- |
+| **4097**  | OpenCode (host publish + container listen) — chosen to avoid Kilo/`4096`          |
 | **19876** | MCP OAuth callback (host `127.0.0.1` only by default; socat → container loopback) |
-| 4096 | Leave free for Kilo / other tools |
+| 4096      | Leave free for Kilo / other tools                                                 |
 
 Set `OPENCODE_PUBLISH_PORT=4097` in `.env` (default in compose). Override publish bind with `OPENCODE_OAUTH_CALLBACK_PUBLISH` if needed.
 
@@ -239,47 +240,64 @@ Create the token at [GitHub → Settings → Developer settings → Fine-grained
 
 #### Repository permissions
 
-| Permission | Access | Purpose |
-|------------|--------|---------|
+| Permission        | Access                                   | Purpose                                       |
+| ----------------- | ---------------------------------------- | --------------------------------------------- |
 | Repository access | All repositories (or selected org repos) | Covers current + future repos the stack needs |
-| Metadata | Read-only (required) | Baseline search/list access |
-| Contents | Read and write | Clone, push, branches, releases |
-| Pull requests | Read and write | Open, review, comment, merge PRs |
-| Issues | Read and write | Issues, comments, labels |
-| Actions | Read and write | Trigger/view workflows, runs, artifacts |
-| Commit statuses | Read and write | Read/report commit build statuses |
-| Administration | Read-only | View repo settings, teams, collaborators |
+| Metadata          | Read-only (required)                     | Baseline search/list access                   |
+| Contents          | Read and write                           | Clone, push, branches, releases               |
+| Pull requests     | Read and write                           | Open, review, comment, merge PRs              |
+| Issues            | Read and write                           | Issues, comments, labels                      |
+| Actions           | Read and write                           | Trigger/view workflows, runs, artifacts       |
+| Commit statuses   | Read and write                           | Read/report commit build statuses             |
+| Administration    | Read-only                                | View repo settings, teams, collaborators      |
 
 #### Organization permissions
 
-| Permission | Access | Purpose |
-|------------|--------|---------|
-| Members | Read-only | Org/team visibility — fine-grained equivalent of classic `read:org` |
-| Projects | Read and write | Org project boards (`GH_PROJECT`) |
+| Permission | Access         | Purpose                                                             |
+| ---------- | -------------- | ------------------------------------------------------------------- |
+| Members    | Read-only      | Org/team visibility — fine-grained equivalent of classic `read:org` |
+| Projects   | Read and write | Org project boards (`GH_PROJECT`)                                   |
 
 #### Classic PAT (optional)
 
 If you use a classic token instead: scopes `repo` and `read:org`.
 
+### CodeRabbit CLI
+
+The image includes the [CodeRabbit CLI](https://docs.coderabbit.ai/cli). The entrypoint authenticates headlessly when `CODERABBIT_API_KEY` is set (same pattern as `GH_TOKEN`).
+
+1. Enable the **Usage-based Add-on** in your CodeRabbit org.
+2. Generate an **Agentic API key** at CodeRabbit dashboard → API Keys (regular user keys are not supported).
+3. Set `CODERABBIT_API_KEY` in `.env` (or Infisical for deployed environments).
+
+Agents should review local changes with structured JSON output:
+
+```bash
+docker exec -w /workspace/apps/<repo> opencode-server coderabbit --agent -t uncommitted
+```
+
+Limit to a few runs per change set. Preflight checks `coderabbit auth status` when the key is configured.
+
 ### Preflight
 
 Checks print `[ok]`, `[warn]`, or `[fail]` with fix hints. Failures block project setup unless `--force`.
 
-| Area | What it checks |
-|------|----------------|
-| Env | `.env`, `OPENCODE_SERVER_PASSWORD`, optional keys |
-| Stack | `opencode-server` running, `/global/health`, workspace mount, Milvus |
-| GitHub | `gh auth status`; fine-grained (`github_pat_*`) via capability checks, or classic scopes (`repo`, `read:org`); `GH_ORG` + repo list access |
-| Providers | `OPENROUTER_API_KEY` or connected providers |
-| MCPs | `GET /mcp` for each enabled server (claude-context, docs-mcp-server, OAuth MCPs) |
+| Area       | What it checks                                                                                                                             |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Env        | `.env`, `OPENCODE_SERVER_PASSWORD`, optional keys                                                                                          |
+| Stack      | `opencode-server` running, `/global/health`, workspace mount, Milvus                                                                       |
+| GitHub     | `gh auth status`; fine-grained (`github_pat_*`) via capability checks, or classic scopes (`repo`, `read:org`); `GH_ORG` + repo list access |
+| CodeRabbit | `coderabbit auth status` when `CODERABBIT_API_KEY` is set                                                                                  |
+| Providers  | `OPENROUTER_API_KEY` or connected providers                                                                                                |
+| MCPs       | `GET /mcp` for each enabled server (claude-context, docs-mcp-server, OAuth MCPs)                                                           |
 
 ### MCP OAuth (e.g. Cloudflare)
 
 OpenCode starts a short-lived callback listener on **`127.0.0.1:19876` inside the container**. The image bridges that to the container eth IP via `socat`, and compose publishes **`127.0.0.1:19876` on the host** (loopback-only — not the public internet).
 
-| Where you run the stack | How the browser reaches the callback |
-|-------------------------|--------------------------------------|
-| **Local Mac** | Open the printed authorize URL; Cloudflare redirects to `http://127.0.0.1:19876/...` on the Mac → Docker → container |
+| Where you run the stack               | How the browser reaches the callback                                                                                                  |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| **Local Mac**                         | Open the printed authorize URL; Cloudflare redirects to `http://127.0.0.1:19876/...` on the Mac → Docker → container                  |
 | **DigitalOcean (or any remote host)** | From your **laptop**, keep an SSH tunnel open, then auth in that same browser session: `ssh -N -L 19876:127.0.0.1:19876 user@droplet` |
 
 ```bash
@@ -305,23 +323,23 @@ Do **not** set `OPENCODE_OAUTH_CALLBACK_PUBLISH=0.0.0.0:19876` on a public dropl
 
 On the Cloudflare authorize screen, grant **least privilege**: **DNS Write** is the only write most agent work needs; keep everything else **Read**. Prefer specific zones over “all zones” when the UI allows it.
 
-| Scope / permission | Access | Purpose |
-|--------------------|--------|---------|
-| **Zone → DNS** | **Edit** (Write) | Create/update/delete DNS records (A, CNAME, TXT, MX, …) |
-| Zone → Zone | Read | List zones / zone metadata |
-| Account → Account Settings (or Account Resources) | Read | Discover account ID / list accounts |
-| Workers Scripts, KV, R2, D1, Pages, Firewall, … | Read (optional) | Inspect config without changing it |
+| Scope / permission                                | Access           | Purpose                                                 |
+| ------------------------------------------------- | ---------------- | ------------------------------------------------------- |
+| **Zone → DNS**                                    | **Edit** (Write) | Create/update/delete DNS records (A, CNAME, TXT, MX, …) |
+| Zone → Zone                                       | Read             | List zones / zone metadata                              |
+| Account → Account Settings (or Account Resources) | Read             | Discover account ID / list accounts                     |
+| Workers Scripts, KV, R2, D1, Pages, Firewall, …   | Read (optional)  | Inspect config without changing it                      |
 
 **Usually skip (unless you explicitly need them):** Billing, User Admin, Account Edit, Workers Scripts Edit, Firewall Edit, Access Edit, SSL/TLS Edit, Cache Purge — those are high-impact writes.
 
 **Add later if needed:**
 
-| Extra permission | When |
-|------------------|------|
-| Workers Scripts Edit | Deploy or update Workers from the agent |
-| Workers KV / D1 / R2 Edit | Mutate storage from the agent |
-| Page Rules / Cache Purge | Cache or routing changes |
-| Firewall / WAF Edit | Security rule changes |
+| Extra permission          | When                                    |
+| ------------------------- | --------------------------------------- |
+| Workers Scripts Edit      | Deploy or update Workers from the agent |
+| Workers KV / D1 / R2 Edit | Mutate storage from the agent           |
+| Page Rules / Cache Purge  | Cache or routing changes                |
+| Firewall / WAF Edit       | Security rule changes                   |
 
 Re-run `opencode mcp auth cloudflare-api` after changing scopes (or revoke the prior grant in the Cloudflare dashboard).
 
@@ -348,11 +366,11 @@ docker exec opencode-server find /workspace/apps -name .git -type d -prune
 
 ## Config updates
 
-| Change | Action |
-|--------|--------|
+| Change                              | Action                                                                              |
+| ----------------------------------- | ----------------------------------------------------------------------------------- |
 | Agents/skills in `roborew/opencode` | Push to GitHub → `docker compose build --no-cache opencode && docker compose up -d` |
-| Container MCP/workspace overrides | Edit `overrides/opencode.server.json` → rebuild |
-| Local CLI config | Edit `~/.config/opencode` as usual (unaffected by this stack) |
+| Container MCP/workspace overrides   | Edit `overrides/opencode.server.json` → rebuild                                     |
+| Local CLI config                    | Edit `~/.config/opencode` as usual (unaffected by this stack)                       |
 
 ## Local CLI + shared Milvus
 
@@ -371,10 +389,10 @@ Inside the container, `localhost` / `127.0.0.1` is the **container**, not your M
 
 An OpenCode plugin installed at container startup rewrites loopback URLs to `host.docker.internal` (or `DOCKER_HOST_INTERNAL`) before tools execute. External and LAN URLs are unchanged.
 
-| Setting | Default | Purpose |
-|---------|---------|---------|
+| Setting                | Default                | Purpose                                 |
+| ---------------------- | ---------------------- | --------------------------------------- |
 | `DOCKER_HOST_INTERNAL` | `host.docker.internal` | Target host for rewritten loopback URLs |
-| `LOCALHOST_REWRITE` | `1` | Set to `0` to disable rewriting |
+| `LOCALHOST_REWRITE`    | `1`                    | Set to `0` to disable rewriting         |
 
 Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and DigitalOcean match Docker Desktop.
 
@@ -382,20 +400,20 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 
 ## Troubleshooting
 
-| Issue | Check |
-|-------|-------|
-| Container name conflict | `docker compose down` in `../twingate` and `../milvus` |
-| Build fails on `git clone` | Verify `CONFIG_REF` branch exists on GitHub |
-| Claude Context fails | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network |
-| OpenRouter "missing authentication header" | Set `OPENROUTER_API_KEY` in `.env` (or configure via server UI `/connect`) |
-| docs-mcp-server fails | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on this Mac, or LAN IP) |
-| localhost link 404 from agent | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
-| Projects not in picker | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `/workspace/apps/...` |
-| Host cannot resolve opencode.home.internal | `./scripts/setup.sh bootstrap` or add `127.0.0.1 opencode.home.internal` to `/etc/hosts` |
-| MCP needs auth (Cloudflare etc.) | Publish `127.0.0.1:19876`; on DO use `ssh -L 19876:127.0.0.1:19876`; then `docker exec -it opencode-server opencode mcp auth <name>` |
-| Twingate can't reach server | Resource = `opencode.home.internal`, TCP `4097`; do **not** set `TWINGATE_DNS` to public DNS; connector + OpenCode on `opencode-net` |
-| Port conflict with Kilo | OpenCode uses **4097**; leave 4096 for Kilo |
-| Provider auth missing | Fresh `opencode-data` volume — set API keys in `.env`/Infisical or migrate auth data |
+| Issue                                      | Check                                                                                                                                           |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Container name conflict                    | `docker compose down` in `../twingate` and `../milvus`                                                                                          |
+| Build fails on `git clone`                 | Verify `CONFIG_REF` branch exists on GitHub                                                                                                     |
+| Claude Context fails                       | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network                                                                |
+| OpenRouter "missing authentication header" | Set `OPENROUTER_API_KEY` in `.env` (or configure via server UI `/connect`)                                                                      |
+| docs-mcp-server fails                      | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on this Mac, or LAN IP)                                         |
+| localhost link 404 from agent              | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
+| Projects not in picker                     | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `/workspace/apps/...`                                          |
+| Host cannot resolve opencode.home.internal | `./scripts/setup.sh bootstrap` or add `127.0.0.1 opencode.home.internal` to `/etc/hosts`                                                        |
+| MCP needs auth (Cloudflare etc.)           | Publish `127.0.0.1:19876`; on DO use `ssh -L 19876:127.0.0.1:19876`; then `docker exec -it opencode-server opencode mcp auth <name>`            |
+| Twingate can't reach server                | Resource = `opencode.home.internal`, TCP `4097`; do **not** set `TWINGATE_DNS` to public DNS; connector + OpenCode on `opencode-net`            |
+| Port conflict with Kilo                    | OpenCode uses **4097**; leave 4096 for Kilo                                                                                                     |
+| Provider auth missing                      | Fresh `opencode-data` volume — set API keys in `.env`/Infisical or migrate auth data                                                            |
 
 ## Files
 
