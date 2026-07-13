@@ -35,9 +35,18 @@ services:
       INFISICAL_TOKEN: ${INFISICAL_TOKEN:-}
       INFISICAL_USE_CLI: ${INFISICAL_USE_CLI:-true}
       SSH_AUTH_SOCK: /ssh-agent
+      OPENCODE_APPS_DIR: ${OPENCODE_APPS_DIR:-${HOME}/projects}
+      OPENCODE_WORKTREES_DIR: ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}
     volumes:
-      - opencode-data:/root/.local/share/opencode
+      # Sessions/auth/db on named volume (side path). Entrypoint links them into
+      # /var/opencode-xdg/opencode. Worktrees bind to the container-canonical path
+      # OpenCode uses, AND again at the host absolute path so git metadata can use
+      # host paths (local Git). Same for apps: /workspace/apps + host same-path.
+      - opencode-data:/var/lib/opencode-data
+      - ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:/var/opencode-xdg/opencode/worktree:delegated
+      - ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:delegated
       - ${OPENCODE_APPS_DIR:-${HOME}/projects}:/workspace/apps:delegated
+      - ${OPENCODE_APPS_DIR:-${HOME}/projects}:${OPENCODE_APPS_DIR:-${HOME}/projects}:delegated
       - ${SSH_AUTH_SOCK}:/ssh-agent
     working_dir: /workspace/apps
     depends_on:

@@ -25,6 +25,15 @@ def apply_env_overrides(overlay: dict) -> dict:
         overlay["mcp"]["docs-mcp-server"]["enabled"] = True
         overlay["mcp"]["docs-mcp-server"]["url"] = docs_url
 
+    # Allow host same-path mounts used for local Git worktree metadata
+    ext = overlay.setdefault("permission", {}).setdefault("external_directory", {})
+    ext.setdefault("/workspace/**", "allow")
+    ext.setdefault("/var/opencode-xdg/opencode/worktree/**", "allow")
+    for env_key in ("OPENCODE_WORKTREES_DIR", "OPENCODE_APPS_DIR"):
+        path = os.environ.get(env_key, "").strip().rstrip("/")
+        if path:
+            ext[f"{path}/**"] = "allow"
+
     claude = overlay.get("mcp", {}).get("claude-context")
     if isinstance(claude, dict):
         env = claude.get("environment")

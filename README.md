@@ -88,7 +88,8 @@ All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .
 | `CONFIG_REPO`, `CONFIG_REF`        | GitHub config clone at build time                                                                                |
 | `OPENCODE_PUBLISH_PORT`            | Host port for OpenCode (default `4097`; avoid `4096` — Kilo)                                                     |
 | `OPENCODE_OAUTH_CALLBACK_PUBLISH`  | Host bind for MCP OAuth callback (default `127.0.0.1:19876`)                                                     |
-| `OPENCODE_APPS_DIR`                | Host path mounted at `/workspace/apps` (local: `~/05_Repos/01_PROJECTS/apps`; cloud: e.g. `/data/opencode/apps`) |
+| `OPENCODE_APPS_DIR`                | Host path mounted at `/workspace/apps` (default `${HOME}/projects`; e.g. `~/projects` or `/data/opencode/apps`) |
+| `OPENCODE_WORKTREES_DIR`           | Host path for workspace worktrees (default `~/.local/share/opencode/worktree`; chats stay on `opencode-data` volume) |
 | `MILVUS_PUBLISH_PORT`              | Host port for Milvus gRPC (empty = not published)                                                                |
 | `MILVUS_HEALTH_PUBLISH_PORT`       | Host port for Milvus health endpoint                                                                             |
 | `MINIO_API_PUBLISH_PORT`           | Host port for MinIO API                                                                                          |
@@ -353,7 +354,7 @@ OpenCode registers **git repository roots**, not parent folders. Setup treats yo
 
 ## Project workspace
 
-Apps are mounted at `/workspace/apps` (default host path: `~/05_Repos/01_PROJECTS/apps`). Use `./scripts/setup.sh` to register repos — manual registration is only needed if you skip setup.
+Apps are mounted at `/workspace/apps` (set `OPENCODE_APPS_DIR` in `.env`; compose default `${HOME}/projects`). Use `./scripts/setup.sh` to register repos — manual registration is only needed if you skip setup.
 
 - Good: `/workspace/apps/fidget/fidget-web`
 - Bad: `/workspace/apps/fidget`
@@ -363,6 +364,16 @@ List discoverable repos inside the container:
 ```bash
 docker exec opencode-server find /workspace/apps -name .git -type d -prune
 ```
+
+### Workspace worktrees (host-visible)
+
+Set `OPENCODE_WORKTREES_DIR` in `.env` to an **absolute** host path (Docker does not expand `~`).
+
+Compose bind-mounts that host directory onto a **container-canonical** path (`/var/opencode-xdg/opencode/worktree`), and again at the same absolute host path. Apps are mounted at `/workspace/apps` and at `$OPENCODE_APPS_DIR`. OpenCode only creates/registers the container worktree path (no duplicate sandboxes). After create, git worktree metadata is rewritten to host paths so local Git (`git worktree list`, Git GUIs, editors) can resolve them on the host; same-path binds keep git working inside the container.
+
+A path proxy on `:4097` rewrites the container path ↔ `$OPENCODE_WORKTREES_DIR` in API/SSE traffic (including URL-encoded `directory=` query params) so the UI always sees the host path.
+
+Chats/sessions stay on the `opencode-data` Docker volume (mounted at `/var/lib/opencode-data`, linked into the XDG data dir).
 
 ## Config updates
 
@@ -414,6 +425,9 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 | Twingate can't reach server                | Resource = `opencode.home.internal`, TCP `4097`; do **not** set `TWINGATE_DNS` to public DNS; connector + OpenCode on `opencode-net`            |
 | Port conflict with Kilo                    | OpenCode uses **4097**; leave 4096 for Kilo                                                                                                     |
 | Provider auth missing                      | Fresh `opencode-data` volume — set API keys in `.env`/Infisical or migrate auth data                                                            |
+| Sessions missing after compose change      | Ensure `opencode-data` is still the named volume at `/var/lib/opencode-data` — never replace it with a host bind or use `docker compose down -v` |
+| Local Git client cannot find worktree      | Recreate the workspace after enabling `OPENCODE_WORKTREES_DIR`; old worktrees used `/root/...` paths                                            |
+| Duplicate workspace entries (same name)    | Rebuild image (single container path + path proxy). Confirm absolute `OPENCODE_WORKTREES_DIR`. Hard-refresh the client once after upgrade. |
 
 ## Files
 

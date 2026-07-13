@@ -23,6 +23,7 @@ run_preflight() {
   check_container
   check_opencode_health
   check_workspace_mount
+  check_worktree_mount
   check_milvus
   check_ssh_agent
   check_gh_auth
@@ -114,6 +115,34 @@ check_workspace_mount() {
     preflight_record ok "workspace mount ${WORKSPACE_ROOT} (${count} entries)"
   else
     preflight_record fail "workspace mount missing at ${WORKSPACE_ROOT}" "check OPENCODE_APPS_DIR in .env"
+  fi
+}
+
+check_worktree_mount() {
+  if ! container_running; then
+    return
+  fi
+  load_env 2>/dev/null || return
+  local host_wt="${OPENCODE_WORKTREES_DIR:-}"
+  local container_wt="/var/opencode-xdg/opencode/worktree"
+  if [[ -z "$host_wt" ]]; then
+    preflight_record warn "OPENCODE_WORKTREES_DIR not set" "set in .env to enable host-visible worktrees"
+    return
+  fi
+  if ! docker_exec test -d "$container_wt" 2>/dev/null; then
+    preflight_record fail "worktree mount missing at ${container_wt}" "check OPENCODE_WORKTREES_DIR bind in compose"
+    return
+  fi
+  if ! docker_exec test -w "$container_wt" 2>/dev/null; then
+    preflight_record fail "worktree mount not writable at ${container_wt}"
+    return
+  fi
+  local count
+  count="$(docker_exec sh -c "ls -1 '${container_wt}' 2>/dev/null | wc -l" | tr -d ' ')"
+  if docker_exec sh -c "ss -lntp 2>/dev/null | grep -q ':4098' || netstat -lntp 2>/dev/null | grep -q ':4098'" 2>/dev/null; then
+    preflight_record ok "worktree mount ${host_wt} → ${container_wt} (${count} entries, path proxy :4098)"
+  else
+    preflight_record warn "worktree mount ${host_wt} → ${container_wt} (${count} entries, path proxy not listening)" "rebuild image / check entrypoint logs"
   fi
 }
 
