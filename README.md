@@ -138,7 +138,7 @@ Set `INFISICAL_USE_CLI=false` to force local `.env` only.
 
 ## Twingate resource (Docker-native — laptop or cloud)
 
-**Goal:** Twingate clients reach OpenCode by a **stable Docker DNS name**, wherever the laptop (or droplet) is. No LAN IP. Same resource works on Mac Docker Desktop and DigitalOcean.
+**Goal:** Twingate clients reach OpenCode by a **stable Docker DNS name**, wherever the laptop (or droplet) is. No LAN IP. Same resource works on Docker Desktop or Cloud.
 
 ### How it works
 
