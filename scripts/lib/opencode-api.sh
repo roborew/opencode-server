@@ -95,7 +95,7 @@ api_delete() {
 }
 
 opencode_public_url() {
-  local fqdn="${OPENCODE_FQDN:-opencode.home.internal}"
+  local fqdn="${OPENCODE_FQDN:-opencode.local}"
   local port="${OPENCODE_PUBLISH_PORT:-4097}"
   port="${port##*:}"
   echo "http://${fqdn}:${port}"

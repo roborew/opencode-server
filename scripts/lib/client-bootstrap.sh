@@ -8,10 +8,10 @@ SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=opencode-api.sh
 source "${SCRIPT_LIB_DIR}/opencode-api.sh"
 
-OPENCODE_FQDN="${OPENCODE_FQDN:-opencode.home.internal}"
+OPENCODE_FQDN="${OPENCODE_FQDN:-opencode.local}"
 
-# Map FQDN → 127.0.0.1 on the Docker host so browsers/clients on this Mac can
-# use the same hostname as Twingate remotes (http://opencode.home.internal:PORT).
+# Map FQDN → 127.0.0.1 on the Docker host so browsers/clients on that host can
+# use the same hostname as Twingate remotes (http://OPENCODE_FQDN:PORT).
 ensure_hosts_entry() {
   local host="${OPENCODE_FQDN}"
   local line="127.0.0.1 ${host}"
@@ -19,9 +19,9 @@ ensure_hosts_entry() {
   echo
   echo "Host DNS (${host})"
   echo "  Why: Twingate remotes resolve ${host} via the connector."
-  echo "  On this Mac (Docker host), that name often fails in apps even when"
+  echo "  On the Docker host, that name often fails in apps even when"
   echo "  Twingate is connected. Mapping ${host} → 127.0.0.1 uses the published"
-  echo "  Docker port while keeping the same URL as phones: $(opencode_public_url)"
+  echo "  Docker port while keeping the same URL as remotes: $(opencode_public_url)"
 
   if grep -Eq "^[[:space:]]*127\\.0\\.0\\.1[[:space:]].*[[:space:]]${host}([[:space:]]|\$)" /etc/hosts \
     || grep -Eq "^[[:space:]]*127\\.0\\.0\\.1[[:space:]]+${host}([[:space:]]|\$)" /etc/hosts; then

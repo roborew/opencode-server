@@ -26,7 +26,7 @@ After changing `CONFIG_REPO` / `CONFIG_REF`, rebuild so the image picks up confi
 | Service                            | Role                                                    |
 | ---------------------------------- | ------------------------------------------------------- |
 | `opencode-server`                  | `opencode serve` on `0.0.0.0:4097`                      |
-| `twingate-connector`               | Proxies remote clients to `opencode.home.internal:4097` |
+| `twingate-connector`               | Proxies remote clients to `OPENCODE_FQDN:4097` (default `opencode.local`) |
 | `milvus-standalone` + etcd + minio | Vector store for `claude-context` MCP                   |
 
 ## Prerequisites
@@ -117,7 +117,7 @@ All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .
 
 ### Deployed environments (Infisical)
 
-The image includes the Infisical CLI. The entrypoint mirrors [fidget-web/docker/docker-entrypoint.sh](https://github.com/roborew/fidget/blob/main/fidget-web/docker/docker-entrypoint.sh):
+The image includes the Infisical CLI. The entrypoint wraps the server with Infisical when configured:
 
 - If `INFISICAL_PROJECT_ID` + `INFISICAL_DOMAIN` (or `INFISICAL_API_URL`) + auth are set → `infisical run` injects secrets at runtime.
 - Otherwise → uses compose `.env` values directly (local fallback).
@@ -146,7 +146,7 @@ Set `INFISICAL_USE_CLI=false` to force local `.env` only.
 Phone / remote client
   → Twingate Client
   → Twingate Connector (container on opencode-net)
-  → Docker DNS resolves opencode.home.internal
+  → Docker DNS resolves OPENCODE_FQDN (default opencode.local)
   → opencode-server:4097
 ```
 
@@ -156,7 +156,7 @@ The connector and OpenCode share `opencode-net`. Docker’s embedded DNS (`127.0
 
 1. Remote network: this connector’s network
 2. **Standard resource**
-3. **Address:** `opencode.home.internal` (no `http://`, no port in the address field)
+3. **Address:** your `OPENCODE_FQDN` (default `opencode.local`; no `http://`, no port in the address field)
 4. **TCP port:** `4097`
 5. Security policy: Default
 6. Assign to your user/group
@@ -164,11 +164,11 @@ The connector and OpenCode share `opencode-net`. Docker’s embedded DNS (`127.0
 ### Connect (phone / Mac / anywhere with Twingate)
 
 ```text
-http://opencode.home.internal:4097
+http://opencode.local:4097
 ```
 
 ```bash
-opencode attach http://opencode.home.internal:4097
+opencode attach http://opencode.local:4097
 # Username: opencode (or OPENCODE_SERVER_USERNAME)
 # Password: OPENCODE_SERVER_PASSWORD
 ```
@@ -179,7 +179,7 @@ opencode attach http://opencode.home.internal:4097
 docker compose up -d --build opencode twingate-connector
 
 docker run --rm --network container:twingate-connector curlimages/curl:8.7.1 \
-  -sf -u "opencode:YOUR_PASSWORD" http://opencode.home.internal:4097/global/health
+  -sf -u "opencode:YOUR_PASSWORD" http://opencode.local:4097/global/health
 ```
 
 Also resolvable: `opencode-server` and compose service name `opencode` (same IP). Prefer the FQDN alias for Twingate.
@@ -194,25 +194,25 @@ Also resolvable: `opencode-server` and compose service name `opencode` (same IP)
 
 Set `OPENCODE_PUBLISH_PORT=4097` in `.env` (default in compose). Override publish bind with `OPENCODE_OAUTH_CALLBACK_PUBLISH` if needed.
 
-### Localhost on the Mac
+### Localhost on the Docker host
 
 ```bash
 curl -sf -u "opencode:YOUR_PASSWORD" http://127.0.0.1:4097/global/health
 ```
 
-`localhost` reaches the same Docker server. Prefer `http://opencode.home.internal:4097` when you want the same hostname as Twingate clients.
+`localhost` reaches the same Docker server. Prefer `http://opencode.local:4097` (or your `OPENCODE_FQDN`) when you want the same hostname as Twingate clients.
 
-LAN IP (`http://192.168.1.71:4097`) still works on the home network but is **not** the Twingate resource — it breaks when the laptop leaves that LAN.
+A raw LAN IP still works on that network but is **not** the Twingate resource — it breaks when the client leaves that LAN.
 
 ### Same hostname on the Docker host (FQDN → loopback)
 
-**Why a hosts entry?** On the machine that runs the connector, `opencode.home.internal` often does not resolve in normal apps (even with Twingate connected). Remotes work; the host does not. Mapping the name to loopback lets this Mac use the same URL as phones:
+**Why a hosts entry?** On the machine that runs the connector, `OPENCODE_FQDN` often does not resolve in normal apps (even with Twingate connected). Remotes work; the host does not. Mapping the name to loopback lets the Docker host use the same URL as remotes:
 
 ```text
-127.0.0.1 opencode.home.internal  →  published host port 4097  →  opencode-server
+127.0.0.1 opencode.local  →  published host port 4097  →  opencode-server
 ```
 
-Phones still go: Twingate → VIP → connector → same container.
+Remotes still go: Twingate → VIP → connector → same container.
 
 `./scripts/setup.sh` can add this hosts line (sudo). It does **not** configure or modify OpenCode.app — attach that client to the server later yourself.
 
@@ -225,7 +225,7 @@ Phones still go: Twingate → VIP → connector → same container.
 Manual hosts (if you skipped the prompt):
 
 ```bash
-sudo sh -c 'echo "127.0.0.1 opencode.home.internal" >> /etc/hosts'
+sudo sh -c 'echo "127.0.0.1 opencode.local" >> /etc/hosts'
 ```
 
 ## Post-compose setup
@@ -234,7 +234,7 @@ After `docker compose up`, run [`scripts/setup.sh`](scripts/setup.sh). It runs i
 
 1. **Preflight** — env, container health, workspace mount, Milvus, `gh` auth (fine-grained or classic), providers, enabled MCPs
 2. **Projects (amend)** — choose the **desired** set (re-runs show `[on]`/`[off]`); register adds, deregister removes sessions for dropped repos
-3. **Host bootstrap** — `/etc/hosts` for `opencode.home.internal`, delete stray `/Users/...` sessions on the server, print web deep links
+3. **Host bootstrap** — `/etc/hosts` for `OPENCODE_FQDN`, delete stray `/Users/...` sessions on the server, print web deep links
 
 ```bash
 ./scripts/setup.sh                    # preflight, then amend local/github set + bootstrap
@@ -255,7 +255,7 @@ Setup never touches OpenCode.app or `~/Library/Application Support/ai.opencode.d
 
 Prefer a **fine-grained personal access token** (`github_pat_*`) for `GH_TOKEN`. Classic tokens use OAuth scopes (`repo`, `read:org`); fine-grained tokens use repository + organization permissions instead, and `gh auth status` will **not** list classic scopes — that is expected.
 
-Create the token at [GitHub → Settings → Developer settings → Fine-grained tokens](https://github.com/settings/personal-access-tokens). Set **Resource owner** to your org (e.g. `RoborewDev`) or grant **All repositories**.
+Create the token at [GitHub → Settings → Developer settings → Fine-grained tokens](https://github.com/settings/personal-access-tokens). Set **Resource owner** to your org (e.g. `your-org`) or grant **All repositories**.
 
 #### Repository permissions
 
@@ -316,8 +316,8 @@ OpenCode starts a short-lived callback listener on **`127.0.0.1:19876` inside th
 
 | Where you run the stack               | How the browser reaches the callback                                                                                                  |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| **Local Mac**                         | Open the printed authorize URL; Cloudflare redirects to `http://127.0.0.1:19876/...` on the Mac → Docker → container                  |
-| **DigitalOcean (or any remote host)** | From your **laptop**, keep an SSH tunnel open, then auth in that same browser session: `ssh -N -L 19876:127.0.0.1:19876 user@droplet` |
+| **Local Docker host**                 | Open the printed authorize URL; Cloudflare redirects to `http://127.0.0.1:19876/...` on that host → Docker → container               |
+| **Remote host (e.g. VPS)**            | From your **laptop**, keep an SSH tunnel open, then auth in that same browser session: `ssh -N -L 19876:127.0.0.1:19876 user@host`   |
 
 ```bash
 # On the machine (or via docker exec on the droplet):
@@ -364,7 +364,7 @@ Re-run `opencode mcp auth cloudflare-api` after changing scopes (or revoke the p
 
 ### Project modes
 
-**Local** — one mount exposes all nested repos; no per-repo volume mounts needed. The script finds `.git` roots under `/workspace/apps` and registers each selected path (e.g. `/workspace/apps/fidget/fidget-web`).
+**Local** — one mount exposes all nested repos; no per-repo volume mounts needed. The script finds `.git` roots under `/workspace/apps` and registers each selected path (e.g. `/workspace/apps/my-app/my-app-web`).
 
 **GitHub** — requires `GH_TOKEN` + `GH_ORG`. Clones into flat `/workspace/apps/<repo>` (cloud: set `OPENCODE_APPS_DIR=/data/opencode/apps` on the host so clones persist). Re-run is idempotent: existing dirs get `git fetch`, already-registered projects are skipped.
 
@@ -374,8 +374,8 @@ OpenCode registers **git repository roots**, not parent folders. Setup treats yo
 
 Apps are mounted at `/workspace/apps` (set `OPENCODE_APPS_DIR` in `.env`; compose default `${HOME}/projects`). Use `./scripts/setup.sh` to register repos — manual registration is only needed if you skip setup.
 
-- Good: `/workspace/apps/fidget/fidget-web`
-- Bad: `/workspace/apps/fidget`
+- Good: `/workspace/apps/my-app/my-app-web`
+- Bad: `/workspace/apps/my-app`
 
 List discoverable repos inside the container:
 
@@ -438,12 +438,12 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 | Claude Context fails                       | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network; `COMPOSE_PROFILES=milvus`                                                                      |
 | Want lighter stack (no Milvus)             | Clear profile: `COMPOSE_PROFILES= docker compose up -d` (etcd/minio/milvus are under the `milvus` profile). Re-enable with `COMPOSE_PROFILES=milvus`. |
 | OpenRouter "missing authentication header" | Set `OPENROUTER_API_KEY` in `.env` (or configure via server UI `/connect`)                                                                      |
-| docs-mcp-server fails                      | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on this Mac, or LAN IP)                                         |
+| docs-mcp-server fails                      | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on the Docker host, or LAN IP)                                  |
 | localhost link 404 from agent              | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
 | Projects not in picker                     | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `/workspace/apps/...`                                          |
-| Host cannot resolve opencode.home.internal | `./scripts/setup.sh bootstrap` or add `127.0.0.1 opencode.home.internal` to `/etc/hosts`                                                        |
-| MCP needs auth (Cloudflare etc.)           | Publish `127.0.0.1:19876`; on DO use `ssh -L 19876:127.0.0.1:19876`; then `docker exec -it opencode-server opencode mcp auth <name>`            |
-| Twingate can't reach server                | Resource = `opencode.home.internal`, TCP `4097`; do **not** set `TWINGATE_DNS` to public DNS; connector + OpenCode on `opencode-net`            |
+| Host cannot resolve OPENCODE_FQDN          | `./scripts/setup.sh bootstrap` or add `127.0.0.1 opencode.local` (or your FQDN) to `/etc/hosts`                                                  |
+| MCP needs auth (Cloudflare etc.)           | Publish `127.0.0.1:19876`; on remote hosts use `ssh -L 19876:127.0.0.1:19876`; then `docker exec -it opencode-server opencode mcp auth <name>`  |
+| Twingate can't reach server                | Resource = `OPENCODE_FQDN` (default `opencode.local`), TCP `4097`; do **not** set `TWINGATE_DNS` to public DNS; connector + OpenCode on `opencode-net` |
 | Port conflict with Kilo                    | OpenCode uses **4097**; leave 4096 for Kilo                                                                                                     |
 | Provider auth missing                      | Fresh `opencode-data` volume — set API keys in `.env`/Infisical or migrate auth data                                                            |
 | Sessions missing after compose change      | Ensure `opencode-data` is still the named volume at `/var/lib/opencode-data` — never replace it with a host bind or use `docker compose down -v` |

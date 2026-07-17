@@ -66,8 +66,8 @@ services:
     networks:
       opencode-net:
         aliases:
-          # FQDN for Twingate resource (same on laptop + cloud)
-          - opencode.home.internal
+          # FQDN for Twingate resource (override via OPENCODE_FQDN)
+          - ${OPENCODE_FQDN:-opencode.local}
 
   twingate-connector:
     image: twingate/connector:1
@@ -83,7 +83,7 @@ services:
       TWINGATE_LOG_ANALYTICS: v2
       TWINGATE_LOG_LEVEL: "3"
       # Do NOT set TWINGATE_DNS to 1.1.1.1/8.8.8.8 — that bypasses Docker
-      # embedded DNS and breaks resolving opencode.home.internal / service names.
+      # embedded DNS and breaks resolving OPENCODE_FQDN / service names.
     sysctls:
       net.ipv4.ping_group_range: "0 2147483647"
     networks:

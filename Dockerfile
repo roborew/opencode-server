@@ -60,7 +60,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # uv (dash-api MCP)
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Infisical CLI (same release pattern as fidget-web, deb on Ubuntu)
+# Infisical CLI (deb on Ubuntu)
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
       amd64) INFISICAL_ARCH=amd64 ;; \

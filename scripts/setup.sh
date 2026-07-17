@@ -38,7 +38,7 @@ Options:
 Each projects run (unless --skip-bootstrap):
   1) You choose the desired project set (re-run amends: add/remove)
   2) Registers missing repos; deregisters removed ones (deletes their sessions)
-  3) /etc/hosts → opencode.home.internal (sudo) so this Mac can use the FQDN
+  3) /etc/hosts → OPENCODE_FQDN (sudo) so the Docker host can use the FQDN
   4) Cleans stray /Users/... sessions on the Docker server
   5) Prints web deep links for each /workspace project
      (does not touch OpenCode.app — attach that client later yourself)

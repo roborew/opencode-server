@@ -373,7 +373,7 @@ offer_mcp_auth() {
     read -r -p "Authenticate mcp/${name} now? [y/N] " answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
       echo "Open the authorize URL in a browser that can reach 127.0.0.1:19876"
-      echo "  Local Mac: use this machine's browser"
+      echo "  Local host: use this machine's browser"
       echo "  Remote/DO: ssh -N -L 19876:127.0.0.1:19876 user@host  (then use the laptop browser)"
       docker exec -it "$CONTAINER_NAME" opencode mcp auth "$name" || true
       # Auth writes tokens to disk; serve process needs an MCP reconnect to pick them up.
