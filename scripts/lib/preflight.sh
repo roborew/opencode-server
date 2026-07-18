@@ -129,21 +129,22 @@ check_worktree_mount() {
   fi
   load_env 2>/dev/null || return
   local host_wt="${OPENCODE_WORKTREES_DIR:-}"
+  local container_wt="/var/opencode-xdg/opencode/worktree"
   if [[ -z "$host_wt" ]]; then
     preflight_record warn "OPENCODE_WORKTREES_DIR not set" "set in .env to …/opencode/worktree for host-visible worktrees"
     return
   fi
-  if ! docker_exec test -d "$host_wt" 2>/dev/null; then
-    preflight_record fail "worktree mount missing at ${host_wt}" "check OPENCODE_WORKTREES_DIR same-path bind in compose"
+  if ! docker_exec test -d "$container_wt" 2>/dev/null; then
+    preflight_record fail "worktree mount missing at ${container_wt}" "check OPENCODE_WORKTREES_DIR bind in compose"
     return
   fi
-  if ! docker_exec test -w "$host_wt" 2>/dev/null; then
-    preflight_record fail "worktree mount not writable at ${host_wt}"
+  if ! docker_exec test -w "$container_wt" 2>/dev/null; then
+    preflight_record fail "worktree mount not writable at ${container_wt}"
     return
   fi
   local count
-  count="$(docker_exec sh -c "ls -1 '${host_wt}' 2>/dev/null | wc -l" | tr -d ' ')"
-  preflight_record ok "worktree mount ${host_wt} (${count} entries, same-path)"
+  count="$(docker_exec sh -c "ls -1 '${container_wt}' 2>/dev/null | wc -l" | tr -d ' ')"
+  preflight_record ok "worktree mount ${host_wt} → ${container_wt} (${count} entries)"
 }
 
 check_milvus() {

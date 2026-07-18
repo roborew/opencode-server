@@ -22,18 +22,18 @@ def apply_env_overrides(overlay: dict) -> dict:
     docs_url = os.environ.get("DOCS_MCP_URL", "").strip()
     if docs_url:
         overlay.setdefault("mcp", {}).setdefault("docs-mcp-server", {})
+        overlay["mcp"]["docs-mcp-server"]["type"] = "remote"
         overlay["mcp"]["docs-mcp-server"]["enabled"] = True
         overlay["mcp"]["docs-mcp-server"]["url"] = docs_url
 
-    # Allow same-path host mounts (apps + worktrees) for local Git / Tower
+    # Allow mounts used by projects + worktrees
     ext = overlay.setdefault("permission", {}).setdefault("external_directory", {})
+    ext.setdefault("/workspace/**", "allow")
+    ext.setdefault("/var/opencode-xdg/opencode/worktree/**", "allow")
     for env_key in ("OPENCODE_WORKTREES_DIR", "OPENCODE_APPS_DIR"):
         path = os.environ.get(env_key, "").strip().rstrip("/")
         if path:
             ext[f"{path}/**"] = "allow"
-    # Fallback when OPENCODE_WORKTREES_DIR is unset (container-only XDG layout)
-    if not os.environ.get("OPENCODE_WORKTREES_DIR", "").strip():
-        ext.setdefault("/var/opencode-xdg/opencode/worktree/**", "allow")
 
     claude = overlay.get("mcp", {}).get("claude-context")
     if isinstance(claude, dict):
@@ -66,10 +66,18 @@ def main() -> int:
     base = json.loads(target.read_text(encoding="utf-8"))
     overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
     overlay = apply_env_overrides(overlay)
-    # Only merge known deployment override sections
-    for section in ("permission", "mcp"):
-        if section in overlay:
-            base[section] = deep_merge(base.get(section, {}), overlay[section])
+
+    # permission: deep-merge
+    if "permission" in overlay:
+        base["permission"] = deep_merge(base.get("permission", {}), overlay["permission"])
+
+    # mcp: overlay server entries fully replace base (develop config has host
+    # mise/npx paths and enabled:false — deep-merge is not enough for Docker).
+    if "mcp" in overlay:
+        base_mcp = dict(base.get("mcp") or {})
+        for name, conf in overlay["mcp"].items():
+            base_mcp[name] = conf
+        base["mcp"] = base_mcp
 
     target.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
     print(f"merge-config: applied overlay from {overlay_path}", file=sys.stderr)

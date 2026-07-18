@@ -37,14 +37,21 @@ services:
       SSH_AUTH_SOCK: /ssh-agent
       OPENCODE_APPS_DIR: ${OPENCODE_APPS_DIR:-${HOME}/projects}
       OPENCODE_WORKTREES_DIR: ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}
+      # Required for Desktop workspace create/delete (otherwise API times out
+      # waiting for workspace.status after 5s — see anomalyco/opencode#23746).
+      OPENCODE_EXPERIMENTAL_WORKSPACES: ${OPENCODE_EXPERIMENTAL_WORKSPACES:-true}
     volumes:
-      # Sessions/auth/db on named volume; entrypoint symlinks into XDG opencode dir.
-      # Apps + worktrees: same-path binds only so git/Tower see host paths natively.
+      # Sessions/auth/db on named volume; entrypoint links into /var/opencode-xdg/opencode
+      # (container XDG — isolated from Desktop ~/.local/share).
+      # Worktrees: host dir → container create path + same-path for local Git.
+      # Apps: /workspace/apps (legacy project registrations) + same-path host bind.
       - opencode-data:/var/lib/opencode-data
+      - ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:/var/opencode-xdg/opencode/worktree:delegated
       - ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:delegated
+      - ${OPENCODE_APPS_DIR:-${HOME}/projects}:/workspace/apps:delegated
       - ${OPENCODE_APPS_DIR:-${HOME}/projects}:${OPENCODE_APPS_DIR:-${HOME}/projects}:delegated
       - ${SSH_AUTH_SOCK}:/ssh-agent
-    working_dir: ${OPENCODE_APPS_DIR:-${HOME}/projects}
+    working_dir: /workspace/apps
     depends_on:
       milvus-standalone:
         condition: service_healthy

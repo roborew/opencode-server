@@ -387,16 +387,19 @@ docker exec opencode-server find "$OPENCODE_APPS_DIR" -name .git -type d -prune
 
 Set `OPENCODE_WORKTREES_DIR` in `.env` to an **absolute** host path ending in `/opencode/worktree` (Docker does not expand `~`). Desktop default: `~/.local/share/opencode/worktree`.
 
-Compose same-path binds that directory into the container. The entrypoint sets `XDG_DATA_HOME` so OpenCode creates worktrees **at that host path** (no Docker-only path, no path proxy). Projects must be registered at `$OPENCODE_APPS_DIR` so `git worktree` metadata uses host paths for both the main repo and the worktree — Tower and local Git stay connected.
+Compose bind-mounts that host directory onto `/var/opencode-xdg/opencode/worktree` (OpenCode create path) and again at the same host path. Apps are mounted at `/workspace/apps` **and** `$OPENCODE_APPS_DIR` (same files) so existing project registrations keep working while host-path git/Tower links can use the Mac path. Sessions stay on the `opencode-data` volume under container XDG (`/var/opencode-xdg`) — not host `~/.local/share` — so Desktop and Docker MCP/indexing stay isolated.
 
-After creating a worktree via Desktop, verify:
+After creating a worktree via Desktop, git link files are rewritten to host paths (`$OPENCODE_APPS_DIR` + `$OPENCODE_WORKTREES_DIR`) so Tower / local Git can open them. Verify:
 
 ```bash
-# gitdir in the main repo must point under OPENCODE_WORKTREES_DIR
+# gitdir in the main repo must point under OPENCODE_WORKTREES_DIR (not /var/opencode-xdg)
 grep -r . "$OPENCODE_APPS_DIR/<repo>/.git/worktrees/"*/gitdir
 
 # worktree .git must point under OPENCODE_APPS_DIR (not /workspace/apps)
 cat "$OPENCODE_WORKTREES_DIR"/…/<name>/.git
+
+git -C "$OPENCODE_APPS_DIR/<repo>" worktree list
+# should list the host worktree path, not "prunable"
 ```
 
 Chats/sessions stay on the `opencode-data` Docker volume (mounted at `/var/lib/opencode-data`, linked into the XDG data dir).
@@ -447,7 +450,8 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 | Desktop freezes / high host RAM            | Usually host + Docker `claude-context` both on — see [Claude Context indexing](#claude-context-indexing-host-vs-docker). Quit Desktop, `pkill -f claude-context-mcp`, set host `mcp.claude-context.enabled` to `false`. Run `./scripts/doctor-perf.sh` while glitching. |
 | Claude Context fails                       | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network; `COMPOSE_PROFILES=milvus`                                                                      |
 | Want lighter stack (no Milvus)             | Clear profile: `COMPOSE_PROFILES= docker compose up -d` (etcd/minio/milvus are under the `milvus` profile). Re-enable with `COMPOSE_PROFILES=milvus`. |
-| OpenRouter "missing authentication header" | Set `OPENROUTER_API_KEY` in `.env` (or configure via server UI `/connect`)                                                                      |
+| Workspace create/delete times out     | Ensure `OPENCODE_EXPERIMENTAL_WORKSPACES=true` (compose default). Without it, OpenCode never emits `workspace.status` and the API fails after 5s. Rebuild/restart after changing. |
+| Deleting a “sandbox” wiped the app repo | Dual mounts (`/workspace/apps` + host path) are the same inode. Delete-guard blocks DELETE of project roots; only worktree-store paths are removable. |
 | docs-mcp-server fails                      | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on the Docker host, or LAN IP)                                  |
 | localhost link 404 from agent              | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
 | Projects not in picker                     | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `$OPENCODE_APPS_DIR/...`                                         |

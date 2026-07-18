@@ -7,12 +7,14 @@ export OPENCODE_OVERRIDE="${OPENCODE_OVERRIDE:-/root/overrides/opencode.server.j
 export MILVUS_ADDRESS="${MILVUS_ADDRESS:-http://milvus-standalone:19530}"
 export PATH="/root/.config/opencode/bin:/root/.opencode/bin:/root/.local/bin:${PATH}"
 
-# Sessions/auth/db stay on the named volume. When OPENCODE_WORKTREES_DIR is set,
-# XDG_DATA_HOME is derived so OpenCode creates worktrees at that host path
-# ($XDG_DATA_HOME/opencode/worktree == OPENCODE_WORKTREES_DIR). Same-path binds
-# make git metadata use host paths natively (Tower / local Git).
+# Keep XDG inside the container (/var/opencode-xdg) so Docker MCP/sessions never
+# share ~/.local/share/opencode with Desktop (that collision breaks claude-context).
+# Host worktrees are bind-mounted onto $XDG_DATA_HOME/opencode/worktree and again
+# at OPENCODE_WORKTREES_DIR (same-path) so checkouts live on the Mac.
 VOLUME_DATA="${OPENCODE_VOLUME_DATA:-/var/lib/opencode-data}"
-FALLBACK_XDG="${OPENCODE_CONTAINER_XDG:-/var/opencode-xdg}"
+CONTAINER_XDG="${OPENCODE_CONTAINER_XDG:-/var/opencode-xdg}"
+CONTAINER_DATA="${CONTAINER_XDG}/opencode"
+CONTAINER_WT="${CONTAINER_DATA}/worktree"
 
 link_volume_into_opencode_dir() {
   local opencode_dir="$1"
@@ -35,31 +37,18 @@ link_volume_into_opencode_dir() {
 
 setup_container_data_layout() {
   local host_wt="${OPENCODE_WORKTREES_DIR:-}"
-  local opencode_dir
 
-  mkdir -p "$VOLUME_DATA"
-
+  export XDG_DATA_HOME="$CONTAINER_XDG"
+  mkdir -p "$CONTAINER_DATA" "$VOLUME_DATA" "$CONTAINER_WT"
   if [[ -n "$host_wt" ]]; then
     host_wt="${host_wt%/}"
-    if [[ "$(basename "$host_wt")" != "worktree" || "$(basename "$(dirname "$host_wt")")" != "opencode" ]]; then
-      echo "opencode-entrypoint: error: OPENCODE_WORKTREES_DIR must end with /opencode/worktree (got: ${host_wt})" >&2
-      exit 1
-    fi
-    export XDG_DATA_HOME="$(dirname "$(dirname "$host_wt")")"
-    opencode_dir="${XDG_DATA_HOME}/opencode"
-    mkdir -p "$host_wt" "$opencode_dir"
+    mkdir -p "$host_wt"
 
-    # Migrate worktrees off old locations onto the host mount (once).
+    # Migrate worktrees off old volume / legacy locations onto the host mount (once).
     if [[ -d "${VOLUME_DATA}/worktree" && ! -L "${VOLUME_DATA}/worktree" ]]; then
       if [[ -n "$(ls -A "${VOLUME_DATA}/worktree" 2>/dev/null)" ]]; then
         echo "opencode-entrypoint: migrating volume worktrees → ${host_wt}" >&2
         cp -a "${VOLUME_DATA}/worktree/." "$host_wt/" 2>/dev/null || true
-      fi
-    fi
-    if [[ -d /var/opencode-xdg/opencode/worktree && ! -L /var/opencode-xdg/opencode/worktree ]]; then
-      if [[ -n "$(ls -A /var/opencode-xdg/opencode/worktree 2>/dev/null)" ]]; then
-        echo "opencode-entrypoint: migrating /var/opencode-xdg worktrees → ${host_wt}" >&2
-        cp -a /var/opencode-xdg/opencode/worktree/. "$host_wt/" 2>/dev/null || true
       fi
     fi
     if [[ -d /root/.local/share/opencode/worktree && ! -L /root/.local/share/opencode/worktree ]]; then
@@ -68,16 +57,12 @@ setup_container_data_layout() {
         cp -a /root/.local/share/opencode/worktree/. "$host_wt/" 2>/dev/null || true
       fi
     fi
-  else
-    export XDG_DATA_HOME="$FALLBACK_XDG"
-    opencode_dir="${XDG_DATA_HOME}/opencode"
-    mkdir -p "${opencode_dir}/worktree"
   fi
 
-  link_volume_into_opencode_dir "$opencode_dir"
+  link_volume_into_opencode_dir "$CONTAINER_DATA"
 
   echo "opencode-entrypoint: XDG_DATA_HOME=${XDG_DATA_HOME}" >&2
-  echo "opencode-entrypoint: worktrees=${OPENCODE_WORKTREES_DIR:-${opencode_dir}/worktree} volume=${VOLUME_DATA}" >&2
+  echo "opencode-entrypoint: worktrees=${CONTAINER_WT} host=${host_wt:-none} volume=${VOLUME_DATA}" >&2
 }
 
 setup_container_data_layout
@@ -91,7 +76,6 @@ install_override_plugins() {
   fi
   mkdir -p "$dest"
   cp -f "$src"/*.js "$dest"/ 2>/dev/null || true
-  # Drop legacy dedupe plugin if a previous image left it in the config dir
   rm -f "${dest}/dedupe-worktree-sandboxes.js"
   if compgen -G "$dest"/*.js >/dev/null; then
     echo "opencode-entrypoint: installed plugins from ${src} → ${dest}" >&2
@@ -116,7 +100,6 @@ fi
 
 # MCP OAuth listens on 127.0.0.1:19876 inside the container. Host browsers (and
 # SSH -L tunnels) hit the published eth0 port, so bridge eth IP → loopback.
-# Bind the container eth IP only — not 0.0.0.0 — so OpenCode can still bind loopback.
 start_oauth_callback_proxy() {
   local port="${OPENCODE_OAUTH_CALLBACK_PORT:-19876}"
   local eth_ip
@@ -129,7 +112,6 @@ start_oauth_callback_proxy() {
     echo "opencode-entrypoint: warn: socat missing; MCP OAuth host callback proxy disabled" >&2
     return 0
   fi
-  # Survive entrypoint `exec` (otherwise bash may SIGHUP the child).
   setsid socat "TCP-LISTEN:${port},bind=${eth_ip},fork,reuseaddr" "TCP:127.0.0.1:${port}" \
     >/dev/null 2>&1 &
   echo "opencode-entrypoint: MCP OAuth callback proxy ${eth_ip}:${port} → 127.0.0.1:${port}" >&2
@@ -137,7 +119,22 @@ start_oauth_callback_proxy() {
 
 start_oauth_callback_proxy
 
+# Rewrite git worktree metadata to host paths for Tower / local Git.
+# Background so a slow apps scan never blocks serve startup.
+if [[ -n "${OPENCODE_WORKTREES_DIR:-}${OPENCODE_APPS_DIR:-}" && -f /usr/local/bin/rewrite-worktree-gitdirs.py ]]; then
+  export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"
+  setsid python3 /usr/local/bin/rewrite-worktree-gitdirs.py >/dev/null 2>&1 &
+fi
+
+# Workspace create/delete needs this flag (otherwise startSync is a no-op and
+# create times out waiting for workspace.status).
+export OPENCODE_EXPERIMENTAL_WORKSPACES="${OPENCODE_EXPERIMENTAL_WORKSPACES:-true}"
+export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"
+
 run_cmd() {
+  if [[ $# -ge 2 && "$1" == "opencode" && "$2" == "serve" ]]; then
+    exec /usr/local/bin/opencode-serve-guarded.sh "$@"
+  fi
   exec "$@"
 }
 
@@ -175,6 +172,15 @@ if [[ -z "$token" ]]; then
 fi
 
 export INFISICAL_TOKEN="$token"
+
+# Infisical injects secrets then runs CMD; wrap serve the same way.
+if [[ $# -ge 2 && "$1" == "opencode" && "$2" == "serve" ]]; then
+  exec infisical run \
+    --projectId="$project_id" \
+    --env="${INFISICAL_ENV:-dev}" \
+    --domain="$domain" \
+    -- /usr/local/bin/opencode-serve-guarded.sh "$@"
+fi
 
 exec infisical run \
   --projectId="$project_id" \
