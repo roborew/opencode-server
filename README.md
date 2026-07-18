@@ -106,8 +106,8 @@ All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .
 | `COMPOSE_PROFILES`                 | Default `milvus` starts etcd/minio/milvus; clear to run OpenCode without the vector stack                        |
 | `OPENCODE_PUBLISH_PORT`            | Host port for OpenCode (default `4097`; avoid `4096` — Kilo)                                                     |
 | `OPENCODE_OAUTH_CALLBACK_PUBLISH`  | Host bind for MCP OAuth callback (default `127.0.0.1:19876`)                                                     |
-| `OPENCODE_APPS_DIR`                | Host path mounted at `/workspace/apps` (default `${HOME}/projects`; e.g. `~/projects` or `/data/opencode/apps`) |
-| `OPENCODE_WORKTREES_DIR`           | Host path for workspace worktrees (default `~/.local/share/opencode/worktree`; chats stay on `opencode-data` volume) |
+| `OPENCODE_APPS_DIR`                | Host path for git repos — same-path bind (default `${HOME}/projects`; absolute path required)                    |
+| `OPENCODE_WORKTREES_DIR`           | Host worktree dir ending in `/opencode/worktree` (default `~/.local/share/opencode/worktree`; chats on `opencode-data`) |
 | `MILVUS_PUBLISH_PORT`              | Host port for Milvus gRPC (empty = not published)                                                                |
 | `MILVUS_HEALTH_PUBLISH_PORT`       | Host port for Milvus health endpoint                                                                             |
 | `MINIO_API_PUBLISH_PORT`           | Host port for MinIO API                                                                                          |
@@ -239,7 +239,7 @@ After `docker compose up`, run [`scripts/setup.sh`](scripts/setup.sh). It runs i
 ```bash
 ./scripts/setup.sh                    # preflight, then amend local/github set + bootstrap
 ./scripts/setup.sh preflight          # checks only
-./scripts/setup.sh projects local     # amend set from mounted /workspace/apps
+./scripts/setup.sh projects local     # amend set from mounted OPENCODE_APPS_DIR
 ./scripts/setup.sh projects github    # clone GH_ORG repos, then amend set
 ./scripts/setup.sh projects local --all --yes --skip-preflight
 ./scripts/setup.sh bootstrap --yes    # hosts + session cleanup only
@@ -292,7 +292,7 @@ The image includes the [CodeRabbit CLI](https://docs.coderabbit.ai/cli). The ent
 Agents should review local changes with structured JSON output:
 
 ```bash
-docker exec -w /workspace/apps/<repo> opencode-server coderabbit --agent -t uncommitted
+docker exec -w "$OPENCODE_APPS_DIR/<repo>" opencode-server coderabbit --agent -t uncommitted
 ```
 
 Limit to a few runs per change set. Preflight checks `coderabbit auth status` when the key is configured.
@@ -364,34 +364,44 @@ Re-run `opencode mcp auth cloudflare-api` after changing scopes (or revoke the p
 
 ### Project modes
 
-**Local** — one mount exposes all nested repos; no per-repo volume mounts needed. The script finds `.git` roots under `/workspace/apps` and registers each selected path (e.g. `/workspace/apps/my-app/my-app-web`).
+**Local** — one same-path mount exposes all nested repos; no per-repo volume mounts needed. The script finds `.git` roots under `$OPENCODE_APPS_DIR` and registers each selected path (e.g. `/Users/you/projects/my-app/my-app-web`).
 
-**GitHub** — requires `GH_TOKEN` + `GH_ORG`. Clones into flat `/workspace/apps/<repo>` (cloud: set `OPENCODE_APPS_DIR=/data/opencode/apps` on the host so clones persist). Re-run is idempotent: existing dirs get `git fetch`, already-registered projects are skipped.
+**GitHub** — requires `GH_TOKEN` + `GH_ORG`. Clones into flat `$OPENCODE_APPS_DIR/<repo>` (cloud: set `OPENCODE_APPS_DIR=/data/opencode/apps` on the host so clones persist). Re-run is idempotent: existing dirs get `git fetch`, already-registered projects are skipped.
 
 OpenCode registers **git repository roots**, not parent folders. Setup treats your selection as the full desired set: missing repos get a seed session; removed ones have their sessions deleted (there is no separate project-delete API). Workspaces remain a separate, optional choice in any client UI.
 
 ## Project workspace
 
-Apps are mounted at `/workspace/apps` (set `OPENCODE_APPS_DIR` in `.env`; compose default `${HOME}/projects`). Use `./scripts/setup.sh` to register repos — manual registration is only needed if you skip setup.
+Apps are same-path mounted at `$OPENCODE_APPS_DIR` (set in `.env`; compose default `${HOME}/projects`). Use `./scripts/setup.sh` to register repos — manual registration is only needed if you skip setup.
 
-- Good: `/workspace/apps/my-app/my-app-web`
-- Bad: `/workspace/apps/my-app`
+- Good: `/Users/you/projects/my-app/my-app-web`
+- Bad: `/Users/you/projects/my-app` (parent folder, not a git root)
 
 List discoverable repos inside the container:
 
 ```bash
-docker exec opencode-server find /workspace/apps -name .git -type d -prune
+docker exec opencode-server find "$OPENCODE_APPS_DIR" -name .git -type d -prune
 ```
 
-### Workspace worktrees (host-visible)
+### Workspace worktrees (host paths for Desktop / Tower)
 
-Set `OPENCODE_WORKTREES_DIR` in `.env` to an **absolute** host path (Docker does not expand `~`).
+Set `OPENCODE_WORKTREES_DIR` in `.env` to an **absolute** host path ending in `/opencode/worktree` (Docker does not expand `~`). Desktop default: `~/.local/share/opencode/worktree`.
 
-Compose bind-mounts that host directory onto a **container-canonical** path (`/var/opencode-xdg/opencode/worktree`), and again at the same absolute host path. Apps are mounted at `/workspace/apps` and at `$OPENCODE_APPS_DIR`. OpenCode only creates/registers the container worktree path (no duplicate sandboxes). After create, git worktree metadata is rewritten to host paths so local Git (`git worktree list`, Git GUIs, editors) can resolve them on the host; same-path binds keep git working inside the container.
+Compose same-path binds that directory into the container. The entrypoint sets `XDG_DATA_HOME` so OpenCode creates worktrees **at that host path** (no Docker-only path, no path proxy). Projects must be registered at `$OPENCODE_APPS_DIR` so `git worktree` metadata uses host paths for both the main repo and the worktree — Tower and local Git stay connected.
 
-A path proxy on `:4097` rewrites the container path ↔ `$OPENCODE_WORKTREES_DIR` in API/SSE traffic (including URL-encoded `directory=` query params) so the UI always sees the host path.
+After creating a worktree via Desktop, verify:
+
+```bash
+# gitdir in the main repo must point under OPENCODE_WORKTREES_DIR
+grep -r . "$OPENCODE_APPS_DIR/<repo>/.git/worktrees/"*/gitdir
+
+# worktree .git must point under OPENCODE_APPS_DIR (not /workspace/apps)
+cat "$OPENCODE_WORKTREES_DIR"/…/<name>/.git
+```
 
 Chats/sessions stay on the `opencode-data` Docker volume (mounted at `/var/lib/opencode-data`, linked into the XDG data dir).
+
+**Migration:** workspaces still keyed to `/workspace/apps` or `/var/opencode-xdg/...` need re-register (`./scripts/setup.sh projects local`) and/or recreate. Do not `docker compose down -v`.
 
 ## Config updates
 
@@ -440,15 +450,15 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 | OpenRouter "missing authentication header" | Set `OPENROUTER_API_KEY` in `.env` (or configure via server UI `/connect`)                                                                      |
 | docs-mcp-server fails                      | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on the Docker host, or LAN IP)                                  |
 | localhost link 404 from agent              | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
-| Projects not in picker                     | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `/workspace/apps/...`                                          |
+| Projects not in picker                     | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `$OPENCODE_APPS_DIR/...`                                         |
 | Host cannot resolve OPENCODE_FQDN          | `./scripts/setup.sh bootstrap` or add `127.0.0.1 opencode.local` (or your FQDN) to `/etc/hosts`                                                  |
 | MCP needs auth (Cloudflare etc.)           | Publish `127.0.0.1:19876`; on remote hosts use `ssh -L 19876:127.0.0.1:19876`; then `docker exec -it opencode-server opencode mcp auth <name>`  |
 | Twingate can't reach server                | Resource = `OPENCODE_FQDN` (default `opencode.local`), TCP `4097`; do **not** set `TWINGATE_DNS` to public DNS; connector + OpenCode on `opencode-net` |
 | Port conflict with Kilo                    | OpenCode uses **4097**; leave 4096 for Kilo                                                                                                     |
 | Provider auth missing                      | Fresh `opencode-data` volume — set API keys in `.env`/Infisical or migrate auth data                                                            |
 | Sessions missing after compose change      | Ensure `opencode-data` is still the named volume at `/var/lib/opencode-data` — never replace it with a host bind or use `docker compose down -v` |
-| Local Git client cannot find worktree      | Recreate the workspace after enabling `OPENCODE_WORKTREES_DIR`; old worktrees used `/root/...` paths                                            |
-| Duplicate workspace entries (same name)    | Rebuild image (single container path + path proxy). Confirm absolute `OPENCODE_WORKTREES_DIR`. Hard-refresh the client once after upgrade. |
+| Local Git / Tower worktree disconnected    | Recreate the workspace after same-path upgrade; confirm gitdir/.git use `$OPENCODE_APPS_DIR` and `$OPENCODE_WORKTREES_DIR` only                 |
+| Old workspace won't open                   | Was keyed to `/workspace/apps` or `/var/opencode-xdg/...` — re-run `projects local` and recreate that workspace                                 |
 
 ## Files
 

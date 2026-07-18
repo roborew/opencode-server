@@ -95,10 +95,7 @@ COPY overrides/ /root/overrides/
 COPY docker/plugins/ /root/overrides/plugins/
 COPY docker/entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
 COPY docker/merge-config.py /usr/local/bin/merge-config.py
-COPY docker/dedupe-worktree-sandboxes.py /usr/local/bin/dedupe-worktree-sandboxes.py
-COPY docker/opencode-path-proxy.py /usr/local/bin/opencode-path-proxy.py
-RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/merge-config.py \
-    /usr/local/bin/dedupe-worktree-sandboxes.py /usr/local/bin/opencode-path-proxy.py
+RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/merge-config.py
 
 EXPOSE 4097 19876
 

@@ -7,55 +7,77 @@ export OPENCODE_OVERRIDE="${OPENCODE_OVERRIDE:-/root/overrides/opencode.server.j
 export MILVUS_ADDRESS="${MILVUS_ADDRESS:-http://milvus-standalone:19530}"
 export PATH="/root/.config/opencode/bin:/root/.opencode/bin:/root/.local/bin:${PATH}"
 
-# Container-canonical OpenCode data root (NOT /root/.local/share — avoids clashing
-# with a host ~/.local/share/opencode CLI install). Worktrees are bind-mounted from
-# OPENCODE_WORKTREES_DIR onto $OPENCODE_CONTAINER_DATA/worktree so OpenCode only
-# ever registers ONE path. The path proxy rewrites that ↔ host for the UI.
+# Sessions/auth/db stay on the named volume. When OPENCODE_WORKTREES_DIR is set,
+# XDG_DATA_HOME is derived so OpenCode creates worktrees at that host path
+# ($XDG_DATA_HOME/opencode/worktree == OPENCODE_WORKTREES_DIR). Same-path binds
+# make git metadata use host paths natively (Tower / local Git).
 VOLUME_DATA="${OPENCODE_VOLUME_DATA:-/var/lib/opencode-data}"
-CONTAINER_XDG="${OPENCODE_CONTAINER_XDG:-/var/opencode-xdg}"
-CONTAINER_DATA="${CONTAINER_XDG}/opencode"
-CONTAINER_WT="${CONTAINER_DATA}/worktree"
+FALLBACK_XDG="${OPENCODE_CONTAINER_XDG:-/var/opencode-xdg}"
 
-setup_container_data_layout() {
-  local host_wt="${OPENCODE_WORKTREES_DIR:-}"
-  export XDG_DATA_HOME="$CONTAINER_XDG"
-  mkdir -p "$CONTAINER_DATA" "$VOLUME_DATA" "$CONTAINER_WT"
-  if [[ -n "$host_wt" ]]; then
-    mkdir -p "$host_wt"
-  fi
-
-  # Migrate worktrees off the old volume location onto the host mount (once).
-  if [[ -n "$host_wt" && -d "${VOLUME_DATA}/worktree" && ! -L "${VOLUME_DATA}/worktree" ]]; then
-    if [[ -n "$(ls -A "${VOLUME_DATA}/worktree" 2>/dev/null)" ]]; then
-      echo "opencode-entrypoint: migrating volume worktrees → ${host_wt}" >&2
-      cp -a "${VOLUME_DATA}/worktree/." "$host_wt/" 2>/dev/null || true
-    fi
-  fi
-  if [[ -n "$host_wt" && -d /root/.local/share/opencode/worktree && ! -L /root/.local/share/opencode/worktree ]]; then
-    if [[ -n "$(ls -A /root/.local/share/opencode/worktree 2>/dev/null)" ]]; then
-      echo "opencode-entrypoint: migrating legacy /root worktrees → ${host_wt}" >&2
-      cp -a /root/.local/share/opencode/worktree/. "$host_wt/" 2>/dev/null || true
-    fi
-  fi
-
-  # Sessions/auth/db stay on the named volume; expose them where OpenCode expects.
+link_volume_into_opencode_dir() {
+  local opencode_dir="$1"
   local name f
+  mkdir -p "$opencode_dir"
   for name in storage snapshot log repos tool-output .pnpm-store \
     auth.json mcp-auth.json account.json; do
     if [[ -e "${VOLUME_DATA}/${name}" ]]; then
-      rm -rf "${CONTAINER_DATA}/${name}"
-      ln -sfn "${VOLUME_DATA}/${name}" "${CONTAINER_DATA}/${name}"
+      rm -rf "${opencode_dir}/${name}"
+      ln -sfn "${VOLUME_DATA}/${name}" "${opencode_dir}/${name}"
     fi
   done
   for f in "${VOLUME_DATA}"/opencode.db "${VOLUME_DATA}"/opencode.db-wal "${VOLUME_DATA}"/opencode.db-shm; do
     [[ -e "$f" ]] || continue
     name="$(basename "$f")"
-    rm -rf "${CONTAINER_DATA}/${name}"
-    ln -sfn "$f" "${CONTAINER_DATA}/${name}"
+    rm -rf "${opencode_dir}/${name}"
+    ln -sfn "$f" "${opencode_dir}/${name}"
   done
+}
+
+setup_container_data_layout() {
+  local host_wt="${OPENCODE_WORKTREES_DIR:-}"
+  local opencode_dir
+
+  mkdir -p "$VOLUME_DATA"
+
+  if [[ -n "$host_wt" ]]; then
+    host_wt="${host_wt%/}"
+    if [[ "$(basename "$host_wt")" != "worktree" || "$(basename "$(dirname "$host_wt")")" != "opencode" ]]; then
+      echo "opencode-entrypoint: error: OPENCODE_WORKTREES_DIR must end with /opencode/worktree (got: ${host_wt})" >&2
+      exit 1
+    fi
+    export XDG_DATA_HOME="$(dirname "$(dirname "$host_wt")")"
+    opencode_dir="${XDG_DATA_HOME}/opencode"
+    mkdir -p "$host_wt" "$opencode_dir"
+
+    # Migrate worktrees off old locations onto the host mount (once).
+    if [[ -d "${VOLUME_DATA}/worktree" && ! -L "${VOLUME_DATA}/worktree" ]]; then
+      if [[ -n "$(ls -A "${VOLUME_DATA}/worktree" 2>/dev/null)" ]]; then
+        echo "opencode-entrypoint: migrating volume worktrees → ${host_wt}" >&2
+        cp -a "${VOLUME_DATA}/worktree/." "$host_wt/" 2>/dev/null || true
+      fi
+    fi
+    if [[ -d /var/opencode-xdg/opencode/worktree && ! -L /var/opencode-xdg/opencode/worktree ]]; then
+      if [[ -n "$(ls -A /var/opencode-xdg/opencode/worktree 2>/dev/null)" ]]; then
+        echo "opencode-entrypoint: migrating /var/opencode-xdg worktrees → ${host_wt}" >&2
+        cp -a /var/opencode-xdg/opencode/worktree/. "$host_wt/" 2>/dev/null || true
+      fi
+    fi
+    if [[ -d /root/.local/share/opencode/worktree && ! -L /root/.local/share/opencode/worktree ]]; then
+      if [[ -n "$(ls -A /root/.local/share/opencode/worktree 2>/dev/null)" ]]; then
+        echo "opencode-entrypoint: migrating legacy /root worktrees → ${host_wt}" >&2
+        cp -a /root/.local/share/opencode/worktree/. "$host_wt/" 2>/dev/null || true
+      fi
+    fi
+  else
+    export XDG_DATA_HOME="$FALLBACK_XDG"
+    opencode_dir="${XDG_DATA_HOME}/opencode"
+    mkdir -p "${opencode_dir}/worktree"
+  fi
+
+  link_volume_into_opencode_dir "$opencode_dir"
 
   echo "opencode-entrypoint: XDG_DATA_HOME=${XDG_DATA_HOME}" >&2
-  echo "opencode-entrypoint: container worktrees=${CONTAINER_WT} host=${host_wt:-none} volume=${VOLUME_DATA}" >&2
+  echo "opencode-entrypoint: worktrees=${OPENCODE_WORKTREES_DIR:-${opencode_dir}/worktree} volume=${VOLUME_DATA}" >&2
 }
 
 setup_container_data_layout
@@ -69,6 +91,8 @@ install_override_plugins() {
   fi
   mkdir -p "$dest"
   cp -f "$src"/*.js "$dest"/ 2>/dev/null || true
+  # Drop legacy dedupe plugin if a previous image left it in the config dir
+  rm -f "${dest}/dedupe-worktree-sandboxes.js"
   if compgen -G "$dest"/*.js >/dev/null; then
     echo "opencode-entrypoint: installed plugins from ${src} → ${dest}" >&2
   fi
@@ -113,41 +137,8 @@ start_oauth_callback_proxy() {
 
 start_oauth_callback_proxy
 
-# Rewrite git worktree gitdirs to host paths for local Git; collapse any legacy dual sandboxes.
-# Run in background so a slow DB/apps scan never blocks serve startup.
-if [[ -n "${OPENCODE_WORKTREES_DIR:-}" && -f /usr/local/bin/dedupe-worktree-sandboxes.py ]]; then
-  export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"
-  setsid python3 /usr/local/bin/dedupe-worktree-sandboxes.py >/dev/null 2>&1 &
-fi
-
-# Path proxy: clients see OPENCODE_WORKTREES_DIR; server uses $CONTAINER_WT only.
-# Mutates $@-style args into proxy_args and starts the proxy when configured.
-prepare_serve_args() {
-  proxy_args=("$@")
-  if [[ -z "${OPENCODE_WORKTREES_DIR:-}" || ! -f /usr/local/bin/opencode-path-proxy.py ]]; then
-    return 0
-  fi
-  local -a args=()
-  local prev="" a
-  for a in "$@"; do
-    if [[ "$prev" == "--port" && "$a" == "4097" ]]; then
-      args+=("4098")
-    elif [[ "$prev" == "--hostname" && ( "$a" == "0.0.0.0" || "$a" == "127.0.0.1" ) ]]; then
-      args+=("127.0.0.1")
-    else
-      args+=("$a")
-    fi
-    prev="$a"
-  done
-  proxy_args=("${args[@]}")
-  export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"
-  echo "opencode-entrypoint: path proxy :4097 → OpenCode :4098 (${CONTAINER_WT} ↔ ${OPENCODE_WORKTREES_DIR})" >&2
-  setsid python3 /usr/local/bin/opencode-path-proxy.py &
-}
-
 run_cmd() {
-  prepare_serve_args "$@"
-  exec "${proxy_args[@]}"
+  exec "$@"
 }
 
 if [[ "${INFISICAL_USE_CLI:-}" == "false" || "${INFISICAL_USE_CLI:-}" == "0" || "${INFISICAL_RUNTIME:-}" == "0" ]]; then
@@ -185,9 +176,8 @@ fi
 
 export INFISICAL_TOKEN="$token"
 
-prepare_serve_args "$@"
 exec infisical run \
   --projectId="$project_id" \
   --env="${INFISICAL_ENV:-dev}" \
   --domain="$domain" \
-  -- "${proxy_args[@]}"
+  -- "$@"

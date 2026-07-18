@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Post-compose setup: preflight + amend project set + host DNS / session cleanup.
+# Post-compose setup: preflight + amend project set + host DNS.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,9 +19,9 @@ Usage: ./scripts/setup.sh [command] [options]
 Commands:
   (default)           Preflight, then amend project set + client bootstrap
   preflight           Run preflight checks only
-  projects local      Amend local /workspace/apps project set (register/deregister)
+  projects local      Amend local OPENCODE_APPS_DIR project set (register/deregister)
   projects github     Clone org repos, then amend project set
-  bootstrap           Hosts entry + host-path session cleanup + print open links
+  bootstrap           Hosts entry + print open links
 
 Options:
   --skip-preflight    Skip preflight before project setup
@@ -32,15 +32,14 @@ Options:
   --host URL          OpenCode API base URL (default http://127.0.0.1:PORT)
   --json              JSON preflight summary
   --include-archived  Include archived GitHub repos (github mode)
-  --skip-bootstrap    Skip hosts/session cleanup after sync
+  --skip-bootstrap    Skip hosts/deep-links after sync
   -h, --help          Show this help
 
 Each projects run (unless --skip-bootstrap):
   1) You choose the desired project set (re-run amends: add/remove)
   2) Registers missing repos; deregisters removed ones (deletes their sessions)
   3) /etc/hosts → OPENCODE_FQDN (sudo) so the Docker host can use the FQDN
-  4) Cleans stray /Users/... sessions on the Docker server
-  5) Prints web deep links for each /workspace project
+  4) Prints web deep links for each host-path project
      (does not touch OpenCode.app — attach that client later yourself)
 
 Examples:
@@ -108,7 +107,7 @@ prompt_project_mode() {
   fi
   echo
   echo "Project setup mode:"
-  echo "  1) local  — amend git repos from mounted /workspace/apps"
+  echo "  1) local  — amend git repos from mounted OPENCODE_APPS_DIR"
   echo "  2) github — clone repos from GH_ORG, then amend project set"
   read -r -p "Choose [1/2] (default 1): " choice
   case "${choice:-1}" in
@@ -121,7 +120,7 @@ prompt_project_mode() {
   esac
 }
 
-# Sets DESIRED_DIRS to absolute /workspace paths for the chosen set.
+# Sets DESIRED_DIRS to absolute host paths for the chosen set.
 prompt_desired_local_set() {
   local -a roots=()
   while IFS= read -r root; do
@@ -251,7 +250,8 @@ _path_in_list() {
   return 1
 }
 
-# Sync server (+ hosts / session cleanup) to exactly the desired /workspace dirs.
+# Sync server to exactly the desired host-path project dirs (OPENCODE_APPS_DIR).
+# Legacy /workspace/apps registrations are treated as the same projects.
 sync_projects() {
   local -a desired=("$@")
   local -a current=()
