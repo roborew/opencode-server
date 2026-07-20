@@ -94,11 +94,13 @@ RUN git clone --depth 1 --branch "${CONFIG_REF}" "${CONFIG_REPO}" /root/.config/
 COPY overrides/ /root/overrides/
 COPY docker/plugins/ /root/overrides/plugins/
 COPY docker/entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
+COPY docker/configure-git-identity.sh /usr/local/bin/configure-git-identity.sh
 COPY docker/merge-config.py /usr/local/bin/merge-config.py
 COPY docker/rewrite-worktree-gitdirs.py /usr/local/bin/rewrite-worktree-gitdirs.py
 COPY docker/worktree-delete-guard.py /usr/local/bin/worktree-delete-guard.py
 COPY docker/opencode-serve-guarded.sh /usr/local/bin/opencode-serve-guarded.sh
-RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/merge-config.py \
+RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/configure-git-identity.sh \
+    /usr/local/bin/merge-config.py \
     /usr/local/bin/rewrite-worktree-gitdirs.py /usr/local/bin/worktree-delete-guard.py \
     /usr/local/bin/opencode-serve-guarded.sh
 

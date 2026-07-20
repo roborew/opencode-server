@@ -3,6 +3,11 @@
 # Used by entrypoint for both plain and Infisical-wrapped startups.
 set -euo pipefail
 
+# Re-apply after Infisical inject (secrets/env not visible in outer entrypoint).
+# shellcheck source=/dev/null
+source /usr/local/bin/configure-git-identity.sh
+configure_git_identity
+
 CONTAINER_WT="${OPENCODE_CONTAINER_WORKTREE:-/var/opencode-xdg/opencode/worktree}"
 export OPENCODE_EXPERIMENTAL_WORKSPACES="${OPENCODE_EXPERIMENTAL_WORKSPACES:-true}"
 export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"

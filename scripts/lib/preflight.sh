@@ -68,6 +68,8 @@ check_optional_env() {
   [[ -z "${GH_TOKEN:-}" ]] && missing+=("GH_TOKEN (GitHub CLI)")
   [[ -z "${CODERABBIT_API_KEY:-}" ]] && missing+=("CODERABBIT_API_KEY (CodeRabbit CLI)")
   [[ -z "${GH_ORG:-}" ]] && missing+=("GH_ORG (org repo listing)")
+  [[ -z "${GIT_USER_NAME:-}${GIT_AUTHOR_NAME:-}" || -z "${GIT_USER_EMAIL:-}${GIT_AUTHOR_EMAIL:-}" ]] \
+    && missing+=("GIT_USER_NAME/GIT_USER_EMAIL (agent commit identity)")
   [[ -z "${DOCS_MCP_URL:-}" ]] && missing+=("DOCS_MCP_URL (docs MCP)")
   [[ -z "${TWINGATE_NETWORK:-}" ]] && missing+=("TWINGATE_* (remote access)")
   if [[ ${#missing[@]} -gt 0 ]]; then

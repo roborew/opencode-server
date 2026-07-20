@@ -37,6 +37,13 @@ services:
       SSH_AUTH_SOCK: /ssh-agent
       OPENCODE_APPS_DIR: ${OPENCODE_APPS_DIR:-${HOME}/projects}
       OPENCODE_WORKTREES_DIR: ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}
+      # Git identity for agent commits inside the container
+      GIT_USER_NAME: ${GIT_USER_NAME:-}
+      GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
+      GIT_AUTHOR_NAME: ${GIT_AUTHOR_NAME:-}
+      GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-}
+      GIT_COMMITTER_NAME: ${GIT_COMMITTER_NAME:-}
+      GIT_COMMITTER_EMAIL: ${GIT_COMMITTER_EMAIL:-}
       # Required for Desktop workspace create/delete (otherwise API times out
       # waiting for workspace.status after 5s — see anomalyco/opencode#23746).
       OPENCODE_EXPERIMENTAL_WORKSPACES: ${OPENCODE_EXPERIMENTAL_WORKSPACES:-true}

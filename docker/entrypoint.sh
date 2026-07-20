@@ -119,6 +119,12 @@ start_oauth_callback_proxy() {
 
 start_oauth_callback_proxy
 
+# Git author/committer for agent commits (GIT_USER_* or GIT_AUTHOR_* from .env / Infisical).
+# Also re-applied in opencode-serve-guarded.sh after Infisical inject.
+# shellcheck source=/dev/null
+source /usr/local/bin/configure-git-identity.sh
+configure_git_identity
+
 # Rewrite git worktree metadata to host paths for Tower / local Git.
 # Background so a slow apps scan never blocks serve startup.
 if [[ -n "${OPENCODE_WORKTREES_DIR:-}${OPENCODE_APPS_DIR:-}" && -f /usr/local/bin/rewrite-worktree-gitdirs.py ]]; then

@@ -100,6 +100,7 @@ All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .
 | `OPENAI_API_KEY`                   | Claude Context embeddings                                                                                        |
 | `OPENROUTER_API_KEY`               | Model provider (if not in persisted auth volume)                                                                 |
 | `GH_TOKEN`, `GH_ORG`, `GH_PROJECT` | GitHub CLI / project board workflows (fine-grained PAT preferred — see below)                                    |
+| `GIT_USER_NAME`, `GIT_USER_EMAIL`  | Git author/committer for agent commits in the container (sets `user.*` + `GIT_AUTHOR_*` / `GIT_COMMITTER_*`)     |
 | `CODERABBIT_API_KEY`               | CodeRabbit CLI agent reviews (Agentic API key — see below)                                                       |
 | `MILVUS_TOKEN`                     | Milvus auth (default `local` for standalone)                                                                     |
 | `CONFIG_REPO`, `CONFIG_REF`        | GitHub config clone at build time                                                                                |
@@ -132,7 +133,7 @@ The image includes the Infisical CLI. The entrypoint wraps the server with Infis
 | `INFISICAL_CLIENT_ID` + `INFISICAL_CLIENT_SECRET` | Universal Auth machine identity             |
 | `INFISICAL_TOKEN`                                 | Alternative to client id/secret             |
 
-Store in Infisical: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GH_*`, `CODERABBIT_API_KEY`, etc.
+Store in Infisical: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GH_*`, `GIT_USER_NAME`, `GIT_USER_EMAIL`, `CODERABBIT_API_KEY`, etc.
 
 Set `INFISICAL_USE_CLI=false` to force local `.env` only.
 
