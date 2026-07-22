@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_LIB_DIR}/../.." && pwd)"
 CONTAINER_NAME="${OPENCODE_CONTAINER:-opencode-server}"
+# Must match docker/entrypoint.sh + compose XDG_DATA_HOME (serve + mcp auth).
+CONTAINER_XDG_DATA_HOME="${OPENCODE_CONTAINER_XDG:-/var/opencode-xdg}"
 # Host apps path inside the container (same-path bind). Set after load_env.
 WORKSPACE_ROOT="${OPENCODE_WORKSPACE_ROOT:-${OPENCODE_APPS_DIR:-}}"
 # Pre-migration container path still present in older project rows
@@ -171,6 +173,15 @@ docker_exec() {
   docker exec "$CONTAINER_NAME" "$@"
 }
 
+# Prefer compose-injected XDG; still pass explicitly for older containers.
+docker_exec_xdg() {
+  docker exec -e "XDG_DATA_HOME=${CONTAINER_XDG_DATA_HOME}" "$CONTAINER_NAME" "$@"
+}
+
+docker_exec_xdg_it() {
+  docker exec -it -e "XDG_DATA_HOME=${CONTAINER_XDG_DATA_HOME}" "$CONTAINER_NAME" "$@"
+}
+
 list_projects_json() {
   api_get "/project" 2>/dev/null || echo '[]'
 }
@@ -330,7 +341,85 @@ print(info.get('status') or info.get('state') or 'unknown')
 # CLI reads mcp-auth.json directly; use when HTTP /mcp is stale after OAuth.
 mcp_cli_connected() {
   local name="$1"
-  docker_exec opencode mcp list 2>/dev/null | grep -E "✓ ${name} " | grep -qi connected
+  docker_exec_xdg opencode mcp list 2>/dev/null | grep -E "✓ ${name} " | grep -qi connected
+}
+
+# Drop incomplete PKCE stubs (oauthState/codeVerifier, no access token) so a
+# fresh setup auth is not poisoned by a prior Desktop/CLI attempt.
+mcp_clear_pending_oauth() {
+  local name="${1:-}"
+  docker_exec_xdg python3 -c "
+import json, shutil, time
+from pathlib import Path
+p = Path('/var/lib/opencode-data/mcp-auth.json')
+if not p.exists():
+    print('mcp-auth: missing')
+    raise SystemExit(0)
+bak = p.with_name(p.name + '.bak-' + time.strftime('%Y%m%dT%H%M%SZ'))
+shutil.copy2(p, bak)
+d = json.loads(p.read_text())
+kept = {}
+removed = []
+prefix = '''${name}'''
+for k, v in d.items():
+    tokens = (v or {}).get('tokens') if isinstance(v, dict) else None
+    has_access = isinstance(tokens, dict) and bool(tokens.get('accessToken'))
+    pending = isinstance(v, dict) and ('oauthState' in v or 'codeVerifier' in v) and not has_access
+    if pending and (not prefix or k == prefix or k.startswith(prefix + '-') or (prefix.startswith('cloudflare') and str(k).startswith('cloudflare'))):
+        removed.append(k)
+        continue
+    kept[k] = v
+p.write_text(json.dumps(kept, indent=2) + '\n')
+print('mcp-auth backup:', bak.name)
+print('mcp-auth removed:', removed or '[]')
+"
+}
+
+# True when opencode serve (not just socat) owns 127.0.0.1:19876 — CLI mcp auth
+# then registers state in a different process and the browser callback CSRF-fails.
+mcp_oauth_callback_held_by_serve() {
+  docker_exec python3 -c "
+import os, pathlib
+port_hex = f'{19876:04X}'
+inodes = set()
+for path in ('/proc/net/tcp', '/proc/net/tcp6'):
+    try:
+        lines = open(path)
+    except OSError:
+        continue
+    for line in lines:
+        parts = line.split()
+        if parts[0] == 'sl':
+            continue
+        if parts[1].split(':')[1].upper() == port_hex and parts[3] == '0A':
+            inodes.add(parts[9])
+for proc in pathlib.Path('/proc').iterdir():
+    if not proc.name.isdigit():
+        continue
+    try:
+        for fd in (proc / 'fd').iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith('socket:[') and target[8:-1] in inodes:
+                cmd = (proc / 'cmdline').read_bytes().replace(b'\\0', b' ').decode(errors='ignore')
+                if 'opencode serve' in cmd or (cmd.startswith('opencode') and 'mcp auth' not in cmd and 'serve' in cmd):
+                    raise SystemExit(0)
+    except OSError:
+        continue
+raise SystemExit(1)
+" 2>/dev/null
+}
+
+# Free :19876 for setup's interactive mcp auth (serve keeps an idle callback server).
+mcp_ensure_oauth_callback_free() {
+  if ! mcp_oauth_callback_held_by_serve; then
+    return 0
+  fi
+  echo "OAuth callback port 19876 is held by opencode serve; restarting ${CONTAINER_NAME} so setup auth can bind it…"
+  docker restart "$CONTAINER_NAME" >/dev/null
+  wait_for_health 45 || return 1
 }
 
 list_providers_json() {

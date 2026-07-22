@@ -47,6 +47,10 @@ services:
       # Required for Desktop workspace create/delete (otherwise API times out
       # waiting for workspace.status after 5s — see anomalyco/opencode#23746).
       OPENCODE_EXPERIMENTAL_WORKSPACES: ${OPENCODE_EXPERIMENTAL_WORKSPACES:-true}
+      # Must match entrypoint: docker exec (setup mcp auth) inherits this so tokens
+      # land in the same store as `opencode serve` (volume via /var/opencode-xdg).
+      XDG_DATA_HOME: /var/opencode-xdg
+      OPENCODE_CONTAINER_XDG: /var/opencode-xdg
     volumes:
       # Sessions/auth/db on named volume; entrypoint links into /var/opencode-xdg/opencode
       # (container XDG — isolated from Desktop ~/.local/share).

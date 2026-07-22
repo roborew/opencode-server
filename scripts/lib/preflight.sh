@@ -322,7 +322,7 @@ for name, info in sorted(data.items()):
       needs_auth|needs_client_registration|authenticating)
         PREFLIGHT_MCP_NEEDS_AUTH+=("$name")
         preflight_record fail "mcp/${name}: ${status}" \
-          "docker exec -it ${CONTAINER_NAME} opencode mcp auth ${name}"
+          "./scripts/setup.sh preflight  # or: docker exec -it -e XDG_DATA_HOME=/var/opencode-xdg ${CONTAINER_NAME} opencode mcp auth ${name}"
         ;;
       *)
         if [[ "$name" == "docs-mcp-server" ]]; then
@@ -375,10 +375,14 @@ offer_mcp_auth() {
     echo
     read -r -p "Authenticate mcp/${name} now? [y/N] " answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
+      echo "Close OpenCode Desktop during this auth (Desktop click OAuth is unreliable here)."
       echo "Open the authorize URL in a browser that can reach 127.0.0.1:19876"
       echo "  Local host: use this machine's browser"
       echo "  Remote/DO: ssh -N -L 19876:127.0.0.1:19876 user@host  (then use the laptop browser)"
-      docker exec -it "$CONTAINER_NAME" opencode mcp auth "$name" || true
+      # Stale PKCE + serve holding :19876 caused CSRF / tokens in the wrong store.
+      mcp_clear_pending_oauth "$name" || true
+      mcp_ensure_oauth_callback_free || true
+      docker_exec_xdg_it opencode mcp auth "$name" || true
       # Auth writes tokens to disk; serve process needs an MCP reconnect to pick them up.
       echo "Reconnecting mcp/${name} on the OpenCode server…"
       mcp_server_reconnect "$name"
@@ -392,7 +396,7 @@ offer_mcp_auth() {
         PREFLIGHT_FAIL=$((PREFLIGHT_FAIL - 1))
       else
         preflight_record fail "mcp/${name}: still ${status}" \
-          "docker exec -it ${CONTAINER_NAME} opencode mcp debug ${name}"
+          "docker exec -it -e XDG_DATA_HOME=/var/opencode-xdg ${CONTAINER_NAME} opencode mcp debug ${name}"
       fi
     fi
   done

@@ -313,6 +313,8 @@ Checks print `[ok]`, `[warn]`, or `[fail]` with fix hints. Failures block projec
 
 ### MCP OAuth (e.g. Cloudflare)
 
+**Preferred path:** keep OpenCode Desktop closed, run `./scripts/setup.sh` (or `./scripts/setup.sh preflight`), and answer **y** when preflight offers `Authenticate mcp/cloudflare-api`. That writes tokens into the Docker `opencode-data` volume and reconnects the server — Desktop then shows Cloudflare connected. Desktop’s in-app Cloudflare click is unreliable against this Docker server; use setup.
+
 OpenCode starts a short-lived callback listener on **`127.0.0.1:19876` inside the container**. The image bridges that to the container eth IP via `socat`, and compose publishes **`127.0.0.1:19876` on the host** (loopback-only — not the public internet).
 
 | Where you run the stack               | How the browser reaches the callback                                                                                                  |
@@ -321,13 +323,16 @@ OpenCode starts a short-lived callback listener on **`127.0.0.1:19876` inside th
 | **Remote host (e.g. VPS)**            | From your **laptop**, keep an SSH tunnel open, then auth in that same browser session: `ssh -N -L 19876:127.0.0.1:19876 user@host`   |
 
 ```bash
-# On the machine (or via docker exec on the droplet):
-docker exec -it opencode-server opencode mcp auth <server-name>
-docker exec -it opencode-server opencode mcp debug <server-name>
-docker exec opencode-server opencode mcp list
+# Prefer setup/preflight (sets XDG + clears stuck OAuth state):
+./scripts/setup.sh preflight
+
+# Manual equivalent (XDG must match serve — compose sets this; pass -e if unsure):
+docker exec -it -e XDG_DATA_HOME=/var/opencode-xdg opencode-server opencode mcp auth <server-name>
+docker exec -e XDG_DATA_HOME=/var/opencode-xdg opencode-server opencode mcp debug <server-name>
+docker exec -e XDG_DATA_HOME=/var/opencode-xdg opencode-server opencode mcp list
 ```
 
-Tokens persist in the `opencode-data` volume (`mcp-auth.json`). Preflight can offer to run auth interactively.
+Tokens persist in the `opencode-data` volume (`mcp-auth.json` under container `XDG_DATA_HOME=/var/opencode-xdg`). Preflight runs auth with that XDG, clears incomplete PKCE state, and restarts the container if `opencode serve` is already holding `:19876` (otherwise the browser callback hits the wrong process → “Invalid or expired state parameter”).
 
 After a successful `opencode mcp auth`, the long-running `opencode serve` process may still show `needs_auth` until the MCP transport is reconnected. Preflight does this automatically; manually:
 
@@ -457,7 +462,7 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 | localhost link 404 from agent              | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
 | Projects not in picker                     | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `$OPENCODE_APPS_DIR/...`                                         |
 | Host cannot resolve OPENCODE_FQDN          | `./scripts/setup.sh bootstrap` or add `127.0.0.1 opencode.local` (or your FQDN) to `/etc/hosts`                                                  |
-| MCP needs auth (Cloudflare etc.)           | Publish `127.0.0.1:19876`; on remote hosts use `ssh -L 19876:127.0.0.1:19876`; then `docker exec -it opencode-server opencode mcp auth <name>`  |
+| MCP needs auth (Cloudflare etc.)           | Close Desktop; `./scripts/setup.sh preflight` and auth when prompted. Manual: `docker exec -it -e XDG_DATA_HOME=/var/opencode-xdg opencode-server opencode mcp auth <name>` then reconnect `/mcp/<name>/connect`. CSRF/state errors ⇒ serve held `:19876` or stale PKCE — re-run preflight (it clears + restarts). |
 | Twingate can't reach server                | Resource = `OPENCODE_FQDN` (default `opencode.local`), TCP `4097`; do **not** set `TWINGATE_DNS` to public DNS; connector + OpenCode on `opencode-net` |
 | Port conflict with Kilo                    | OpenCode uses **4097**; leave 4096 for Kilo                                                                                                     |
 | Provider auth missing                      | Fresh `opencode-data` volume — set API keys in `.env`/Infisical or migrate auth data                                                            |
