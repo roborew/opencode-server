@@ -372,7 +372,7 @@ Re-run `opencode mcp auth cloudflare-api` after changing scopes (or revoke the p
 
 **Local** — one same-path mount exposes all nested repos; no per-repo volume mounts needed. The script finds `.git` roots under `$OPENCODE_APPS_DIR` and registers each selected path (e.g. `/Users/you/projects/my-app/my-app-web`).
 
-**GitHub** — requires `GH_TOKEN` + `GH_ORG`. Clones into flat `$OPENCODE_APPS_DIR/<repo>` (cloud: set `OPENCODE_APPS_DIR=/data/opencode/apps` on the host so clones persist). Re-run is idempotent: existing dirs get `git fetch`, already-registered projects are skipped.
+**GitHub** — requires `GH_TOKEN` + `GH_ORG`. Lists org repos, you pick which to keep/clone into flat `$OPENCODE_APPS_DIR/<repo>` (cloud: set `OPENCODE_APPS_DIR=/data/opencode/apps` on the host so clones persist). After clone/update, checkouts land on `OPENCODE_WORK_BRANCH` (default `dev`) when that remote branch exists. Re-run is idempotent: existing dirs get `git fetch` + work-branch checkout; already-registered projects are skipped.
 
 OpenCode registers **git repository roots**, not parent folders. Setup treats your selection as the full desired set: missing repos get a seed session; removed ones have their sessions deleted (there is no separate project-delete API). Workspaces remain a separate, optional choice in any client UI.
 

@@ -20,7 +20,7 @@ Commands:
   (default)           Preflight, then amend project set + client bootstrap
   preflight           Run preflight checks only
   projects local      Amend local OPENCODE_APPS_DIR project set (register/deregister)
-  projects github     Clone org repos, then amend project set
+  projects github     List GH_ORG repos, clone chosen ones onto work branch, amend set
   bootstrap           Hosts entry + print open links
 
 Options:
@@ -34,6 +34,9 @@ Options:
   --include-archived  Include archived GitHub repos (github mode)
   --skip-bootstrap    Skip hosts/deep-links after sync
   -h, --help          Show this help
+
+GitHub mode clones/updates into OPENCODE_APPS_DIR and checks out
+OPENCODE_WORK_BRANCH (default: dev) when that remote branch exists.
 
 Each projects run (unless --skip-bootstrap):
   1) You choose the desired project set (re-run amends: add/remove)
@@ -143,14 +146,15 @@ prompt_desired_local_set() {
     display+=("$(relative_workspace_path "$root")")
   done
 
-  PRESELECTED_ITEMS=("${registered_rels[@]}")
+  # Empty arrays + set -u: use ${arr[@]+"..."} so fresh installs don't unbound.
+  PRESELECTED_ITEMS=("${registered_rels[@]+"${registered_rels[@]}"}")
   if ! select_items "Desired projects (amend set):" "${display[@]}"; then
     exit 1
   fi
 
   DESIRED_DIRS=()
   local rel
-  for rel in "${SELECTED_ITEMS[@]}"; do
+  for rel in ${SELECTED_ITEMS[@]+"${SELECTED_ITEMS[@]}"}; do
     DESIRED_DIRS+=("${WORKSPACE_ROOT}/${rel}")
   done
 }
@@ -166,7 +170,41 @@ run_projects_local() {
   echo "Discovering git repos under ${WORKSPACE_ROOT}..."
   local -a DESIRED_DIRS=()
   prompt_desired_local_set
-  sync_projects "${DESIRED_DIRS[@]}"
+  sync_projects ${DESIRED_DIRS[@]+"${DESIRED_DIRS[@]}"}
+}
+
+# After clone/fetch: land on OPENCODE_WORK_BRANCH (default dev) when origin has it.
+# Does not force-reset local work; warns and leaves the current branch if checkout fails.
+ensure_work_branch() {
+  local dir="$1"
+  local branch="${OPENCODE_WORK_BRANCH:-dev}"
+  local current remote_ref="refs/remotes/origin/${branch}"
+
+  docker_exec git -C "$dir" fetch --prune origin >/dev/null 2>&1 || true
+
+  if ! docker_exec git -C "$dir" show-ref --verify --quiet "$remote_ref" 2>/dev/null; then
+    current="$(docker_exec git -C "$dir" branch --show-current 2>/dev/null || echo '?')"
+    echo "  warning: origin/${branch} missing — left on ${current}" >&2
+    return 0
+  fi
+
+  current="$(docker_exec git -C "$dir" branch --show-current 2>/dev/null || true)"
+  if [[ "$current" != "$branch" ]]; then
+    if docker_exec git -C "$dir" show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
+      if ! docker_exec git -C "$dir" checkout "$branch" >/dev/null 2>&1; then
+        echo "  warning: could not checkout ${branch} (local changes?) — left on ${current:-?}" >&2
+        return 0
+      fi
+    else
+      if ! docker_exec git -C "$dir" checkout -b "$branch" --track "origin/${branch}" >/dev/null 2>&1; then
+        echo "  warning: could not create local ${branch} from origin/${branch}" >&2
+        return 0
+      fi
+    fi
+  fi
+
+  docker_exec git -C "$dir" merge --ff-only "origin/${branch}" >/dev/null 2>&1 || true
+  echo "  on ${branch}"
 }
 
 run_projects_github() {
@@ -180,6 +218,8 @@ run_projects_github() {
     echo "GH_TOKEN and GH_ORG are required for github mode." >&2
     exit 1
   fi
+
+  local work_branch="${OPENCODE_WORK_BRANCH:-dev}"
 
   echo
   echo "Listing repos in org ${GH_ORG}..."
@@ -207,37 +247,46 @@ for r in sorted(data, key=lambda x: x['name'].lower()):
     exit 1
   fi
 
+  echo "Found ${#names[@]} repo(s). Choose which to keep/clone (will checkout ${work_branch})."
+
   local -a registered_names=()
   local wt
   while IFS= read -r wt; do
     [[ -n "$wt" ]] && registered_names+=("$(basename "$wt")")
   done < <(list_registered_workspace_projects)
 
-  PRESELECTED_ITEMS=("${registered_names[@]}")
+  # Empty arrays + set -u: use ${arr[@]+"..."} so fresh installs don't unbound.
+  PRESELECTED_ITEMS=("${registered_names[@]+"${registered_names[@]}"}")
   if ! select_items "Desired repos (clone if needed, amend set):" "${names[@]}"; then
     exit 1
   fi
 
   local -a desired=()
   local name target
-  for name in "${SELECTED_ITEMS[@]}"; do
+  for name in ${SELECTED_ITEMS[@]+"${SELECTED_ITEMS[@]}"}; do
     target="${WORKSPACE_ROOT}/${name}"
     if [[ "$DRY_RUN" == "1" ]]; then
-      echo "[dry-run] would ensure clone ${GH_ORG}/${name} -> ${target}"
+      echo "[dry-run] would ensure clone ${GH_ORG}/${name} -> ${target} (checkout ${work_branch})"
       desired+=("$target")
       continue
     fi
     if docker_exec test -d "${target}/.git" 2>/dev/null; then
       echo "Updating ${name}..."
-      docker_exec git -C "$target" fetch --prune 2>/dev/null || true
+      ensure_work_branch "$target"
     else
       echo "Cloning ${name}..."
-      docker_exec gh repo clone "${GH_ORG}/${name}" "$target"
+      # Prefer cloning straight onto the work branch when it exists remotely.
+      # If -b fails (missing branch / partial dir), remove and clone default, then ensure.
+      if ! docker_exec gh repo clone "${GH_ORG}/${name}" "$target" -- -b "$work_branch" 2>/dev/null; then
+        docker_exec rm -rf "$target" 2>/dev/null || true
+        docker_exec gh repo clone "${GH_ORG}/${name}" "$target"
+      fi
+      ensure_work_branch "$target"
     fi
     desired+=("$target")
   done
 
-  sync_projects "${desired[@]}"
+  sync_projects ${desired[@]+"${desired[@]}"}
 }
 
 _path_in_list() {
@@ -262,11 +311,11 @@ sync_projects() {
 
   local -a to_add=() to_remove=()
   local d
-  for d in "${desired[@]}"; do
-    _path_in_list "$d" "${current[@]}" || to_add+=("$d")
+  for d in ${desired[@]+"${desired[@]}"}; do
+    _path_in_list "$d" ${current[@]+"${current[@]}"} || to_add+=("$d")
   done
-  for d in "${current[@]}"; do
-    _path_in_list "$d" "${desired[@]}" || to_remove+=("$d")
+  for d in ${current[@]+"${current[@]}"}; do
+    _path_in_list "$d" ${desired[@]+"${desired[@]}"} || to_remove+=("$d")
   done
 
   local keep_count=$(( ${#desired[@]} - ${#to_add[@]} ))
@@ -353,7 +402,7 @@ sync_projects() {
     return
   fi
 
-  run_client_bootstrap "${desired[@]}"
+  run_client_bootstrap ${desired[@]+"${desired[@]}"}
 }
 
 run_bootstrap_only() {

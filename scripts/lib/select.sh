@@ -23,12 +23,13 @@ select_items() {
     return 0
   fi
 
-  local -a pre=("${PRESELECTED_ITEMS[@]:-}")
+  # Empty/unset arrays + set -u (bash 4.4+): ${arr[@]+"..."} not ${arr[@]:-}.
+  local -a pre=("${PRESELECTED_ITEMS[@]+"${PRESELECTED_ITEMS[@]}"}")
   unset PRESELECTED_ITEMS 2>/dev/null || true
 
   # Amend / re-run: numbered UI with [on]/[off] is clearer than fzf.
   if [[ ${#pre[@]} -gt 0 ]]; then
-    PRESELECTED_FOR_AMEND=("${pre[@]}")
+    PRESELECTED_FOR_AMEND=("${pre[@]+"${pre[@]}"}")
     _select_items_amend "$header" "${items[@]}"
     unset PRESELECTED_FOR_AMEND
     return $?
@@ -72,7 +73,7 @@ _select_items_amend() {
   shift
   local -a items=("$@")
   # PRESELECTED passed via global PRESELECTED_FOR_AMEND to avoid namerefs (bash 3.2)
-  local -a pre=("${PRESELECTED_FOR_AMEND[@]:-}")
+  local -a pre=("${PRESELECTED_FOR_AMEND[@]+"${PRESELECTED_FOR_AMEND[@]}"}")
 
   echo "$header" >&2
   echo "  Re-run: choose the desired project set (not only new ones)." >&2
@@ -82,7 +83,7 @@ _select_items_amend() {
   local item i=1
   local -a default_idx=()
   for item in "${items[@]}"; do
-    if _item_in_list "$item" "${pre[@]}"; then
+    if _item_in_list "$item" ${pre[@]+"${pre[@]}"}; then
       printf '  %3d) [on]  %s\n' "$i" "$item" >&2
       default_idx+=("$i")
     else
@@ -95,7 +96,7 @@ _select_items_amend() {
   read -r -p "Desired set [Enter=keep current]: " input
 
   if [[ -z "$input" ]]; then
-    SELECTED_ITEMS=("${pre[@]}")
+    SELECTED_ITEMS=("${pre[@]+"${pre[@]}"}")
     return 0
   fi
   if [[ "$input" == "a" || "$input" == "A" ]]; then
@@ -103,7 +104,7 @@ _select_items_amend() {
     return 0
   fi
   if [[ "$input" == "k" || "$input" == "K" ]]; then
-    SELECTED_ITEMS=("${pre[@]}")
+    SELECTED_ITEMS=("${pre[@]+"${pre[@]}"}")
     return 0
   fi
   if [[ "$input" == "0" || "$input" == "none" ]]; then
