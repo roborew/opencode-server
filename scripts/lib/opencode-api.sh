@@ -201,10 +201,11 @@ register_project() {
   echo "ok"
 }
 
-# Session registration leaves icon null. Without icon.color the UI falls back to
-# grey (packages/app getAvatarColors). Desktop normally PATCHes a colour; browser
-# does not. Mirror that client update with OpenCode's valid keys only.
-assign_missing_project_colors() {
+# After session registration, projects often have icon=null and name=null.
+# Desktop colour saves write name="" (meaning "default") and sometimes invalid
+# colours like "green"; iOS then shows "?" instead of the folder name.
+# Normalize so every client gets a real name + a valid avatar colour.
+normalize_registered_projects() {
   local root="${WORKSPACE_ROOT:-}"
   local projects
   projects="$(list_projects_json)"
@@ -216,27 +217,34 @@ base = sys.argv[3].rstrip('/')
 palette = ['pink', 'mint', 'orange', 'purple', 'cyan', 'lime']
 valid = set(palette)
 data = json.loads(sys.argv[4] or '[]')
-used = {((p.get('icon') or {}).get('color') or '') for p in data}
-used.discard('')
+used = {((p.get('icon') or {}).get('color') or '') for p in data if ((p.get('icon') or {}).get('color') or '') in valid}
 n = 0
 for p in data:
     wt = (p.get('worktree') or '').rstrip('/')
     if not root or not wt or wt == '/' or not (wt == root or wt.startswith(root + '/')):
         continue
-    icon = p.get('icon') if isinstance(p.get('icon'), dict) else None
-    color = (icon or {}).get('color') or ''
-    if color in valid:
-        continue
     pid = p.get('id') or ''
     if not pid:
         continue
-    available = [c for c in palette if c not in used]
-    color = available[0] if available else palette[sum(ord(c) for c in pid) % len(palette)]
-    used.add(color)
-    body = json.dumps({'icon': {'color': color}}).encode()
+    folder = wt.rsplit('/', 1)[-1]
+    icon = p.get('icon') if isinstance(p.get('icon'), dict) else {}
+    color = (icon or {}).get('color') or ''
+    name = p.get('name')
+    need_color = color not in valid
+    # null/None is fine for some clients; empty string breaks iOS (\"?\").
+    need_name = name is None or name == ''
+    if not need_color and not need_name:
+        continue
+    if need_color:
+        available = [c for c in palette if c not in used]
+        color = available[0] if available else palette[sum(ord(c) for c in pid) % len(palette)]
+        used.add(color)
+    body = {'icon': {'color': color}}
+    if need_name:
+        body['name'] = folder
     req = urllib.request.Request(
         f'{base}/project/{pid}',
-        data=body,
+        data=json.dumps(body).encode(),
         method='PATCH',
         headers={
             'Authorization': 'Basic ' + base64.b64encode(auth.encode()).decode(),
@@ -246,13 +254,21 @@ for p in data:
     try:
         urllib.request.urlopen(req)
         n += 1
-        name = wt.rsplit('/', 1)[-1]
-        print(f'  color {name} -> {color}')
+        bits = []
+        if need_color:
+            bits.append(f'color={color}')
+        if need_name:
+            bits.append(f'name={folder}')
+        print(f\"  normalize {folder}: {', '.join(bits)}\")
     except Exception as exc:
-        name = wt.rsplit('/', 1)[-1]
-        print(f'  color skip {name}: {exc}', file=sys.stderr)
-print(f'Assigned colours: {n}')
+        print(f'  normalize skip {folder}: {exc}', file=sys.stderr)
+print(f'Normalized projects: {n}')
 " "$root" "$(opencode_auth)" "$(opencode_base_url)" "$projects"
+}
+
+# Back-compat alias used by setup.sh
+assign_missing_project_colors() {
+  normalize_registered_projects "$@"
 }
 
 # List sessions whose directory matches the worktree.

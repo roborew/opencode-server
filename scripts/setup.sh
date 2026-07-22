@@ -407,7 +407,7 @@ sync_projects() {
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "Dry run complete."
   else
-    assign_missing_project_colors || true
+    normalize_registered_projects || true
     echo "Sync done: +${ok_add} registered (${skip_add} skip), -${ok_rm} deregistered, fails add=${fail_add} rm=${fail_rm}."
     echo
     echo "Projects on server:"

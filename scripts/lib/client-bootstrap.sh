@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Host DNS + project deep links after project sync.
-# Never touches OpenCode.app (macOS GUI) or its Application Support store.
+# Does not write OpenCode Desktop Application Support state.
 # shellcheck source=opencode-api.sh
 set -euo pipefail
 
