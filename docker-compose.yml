@@ -34,7 +34,6 @@ services:
       INFISICAL_CLIENT_SECRET: ${INFISICAL_CLIENT_SECRET:-}
       INFISICAL_TOKEN: ${INFISICAL_TOKEN:-}
       INFISICAL_USE_CLI: ${INFISICAL_USE_CLI:-true}
-      SSH_AUTH_SOCK: /ssh-agent
       OPENCODE_APPS_DIR: ${OPENCODE_APPS_DIR:-${HOME}/projects}
       OPENCODE_WORKTREES_DIR: ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}
       # Git identity for agent commits inside the container

@@ -25,7 +25,6 @@ run_preflight() {
   check_workspace_mount
   check_worktree_mount
   check_milvus
-  check_ssh_agent
   check_gh_auth
   check_coderabbit_auth
   check_providers
@@ -162,22 +161,6 @@ check_milvus() {
     return
   fi
   preflight_record fail "milvus not healthy" "docker compose up -d && check milvus services"
-}
-
-check_ssh_agent() {
-  if ! container_running; then
-    return
-  fi
-  load_env 2>/dev/null || return
-  if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
-    preflight_record warn "SSH_AUTH_SOCK not set (git signing / SSH clone may fail)"
-    return
-  fi
-  if docker_exec test -S /ssh-agent 2>/dev/null; then
-    preflight_record ok "SSH agent socket mounted"
-  else
-    preflight_record warn "SSH agent socket not available in container" "fix SSH_AUTH_SOCK path in .env"
-  fi
 }
 
 check_gh_auth() {
