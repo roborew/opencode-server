@@ -19,7 +19,7 @@ Usage: ./scripts/setup.sh [command] [options]
 Commands:
   (default)           Preflight, then amend project set + client bootstrap
   preflight           Run preflight checks only
-  projects local      Amend local OPENCODE_APPS_DIR project set (register/deregister)
+  projects local      Amend local OPENCODE_APPS_DIR set; ensure work branch checkout
   projects github     List GH_ORG repos, clone chosen ones onto work branch, amend set
   bootstrap           Hosts entry + print open links
 
@@ -35,8 +35,8 @@ Options:
   --skip-bootstrap    Skip hosts/deep-links after sync
   -h, --help          Show this help
 
-GitHub mode clones/updates into OPENCODE_APPS_DIR and checks out
-OPENCODE_WORK_BRANCH (default: dev) when that remote branch exists.
+Local and github modes ensure OPENCODE_WORK_BRANCH (default: develop)
+when that remote branch exists (fetch + checkout; no force-reset).
 
 Each projects run (unless --skip-bootstrap):
   1) You choose the desired project set (re-run amends: add/remove)
@@ -166,18 +166,33 @@ run_projects_local() {
   fi
   load_env || true
 
+  local work_branch="${OPENCODE_WORK_BRANCH:-develop}"
+
   echo
   echo "Discovering git repos under ${WORKSPACE_ROOT}..."
   local -a DESIRED_DIRS=()
   prompt_desired_local_set
+
+  echo
+  echo "Ensuring selected repos are on ${work_branch} (when origin has it)..."
+  local d
+  for d in ${DESIRED_DIRS[@]+"${DESIRED_DIRS[@]}"}; do
+    if [[ "$DRY_RUN" == "1" ]]; then
+      echo "[dry-run] would ensure checkout ${work_branch} in ${d}"
+      continue
+    fi
+    echo "$(basename "$d"):"
+    ensure_work_branch "$d"
+  done
+
   sync_projects ${DESIRED_DIRS[@]+"${DESIRED_DIRS[@]}"}
 }
 
-# After clone/fetch: land on OPENCODE_WORK_BRANCH (default dev) when origin has it.
+# After clone/fetch: land on OPENCODE_WORK_BRANCH (default develop) when origin has it.
 # Does not force-reset local work; warns and leaves the current branch if checkout fails.
 ensure_work_branch() {
   local dir="$1"
-  local branch="${OPENCODE_WORK_BRANCH:-dev}"
+  local branch="${OPENCODE_WORK_BRANCH:-develop}"
   local current remote_ref="refs/remotes/origin/${branch}"
 
   docker_exec git -C "$dir" fetch --prune origin >/dev/null 2>&1 || true
@@ -219,7 +234,7 @@ run_projects_github() {
     exit 1
   fi
 
-  local work_branch="${OPENCODE_WORK_BRANCH:-dev}"
+  local work_branch="${OPENCODE_WORK_BRANCH:-develop}"
 
   echo
   echo "Listing repos in org ${GH_ORG}..."
