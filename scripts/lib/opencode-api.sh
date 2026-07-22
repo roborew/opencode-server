@@ -201,9 +201,10 @@ register_project() {
   echo "ok"
 }
 
-# Seed icon.color when missing. Clients only enable the colour picker once icon exists
-# (session seed leaves icon null; Desktop-created projects usually already have one).
-ensure_project_icons() {
+# Session registration leaves icon null. Without icon.color the UI falls back to
+# grey (packages/app getAvatarColors). Desktop normally PATCHes a colour; browser
+# does not. Mirror that client update with OpenCode's valid keys only.
+assign_missing_project_colors() {
   local root="${WORKSPACE_ROOT:-}"
   local projects
   projects="$(list_projects_json)"
@@ -212,20 +213,26 @@ import json, sys, urllib.request, base64
 root = sys.argv[1].rstrip('/')
 auth = sys.argv[2]
 base = sys.argv[3].rstrip('/')
-palette = ['orange','mint','pink','lime','purple','cyan','blue','red','amber','green']
+palette = ['pink', 'mint', 'orange', 'purple', 'cyan', 'lime']
+valid = set(palette)
 data = json.loads(sys.argv[4] or '[]')
+used = {((p.get('icon') or {}).get('color') or '') for p in data}
+used.discard('')
 n = 0
 for p in data:
     wt = (p.get('worktree') or '').rstrip('/')
     if not root or not wt or wt == '/' or not (wt == root or wt.startswith(root + '/')):
         continue
-    icon = p.get('icon') or {}
-    if isinstance(icon, dict) and icon.get('color'):
+    icon = p.get('icon') if isinstance(p.get('icon'), dict) else None
+    color = (icon or {}).get('color') or ''
+    if color in valid:
         continue
     pid = p.get('id') or ''
     if not pid:
         continue
-    color = palette[sum(ord(c) for c in pid) % len(palette)]
+    available = [c for c in palette if c not in used]
+    color = available[0] if available else palette[sum(ord(c) for c in pid) % len(palette)]
+    used.add(color)
     body = json.dumps({'icon': {'color': color}}).encode()
     req = urllib.request.Request(
         f'{base}/project/{pid}',
@@ -239,10 +246,12 @@ for p in data:
     try:
         urllib.request.urlopen(req)
         n += 1
-        print(f\"  icon {wt.rsplit('/', 1)[-1]} -> {color}\")
+        name = wt.rsplit('/', 1)[-1]
+        print(f'  color {name} -> {color}')
     except Exception as exc:
-        print(f\"  icon skip {wt.rsplit('/', 1)[-1]}: {exc}\", file=sys.stderr)
-print(f\"Seeded icons: {n}\")
+        name = wt.rsplit('/', 1)[-1]
+        print(f'  color skip {name}: {exc}', file=sys.stderr)
+print(f'Assigned colours: {n}')
 " "$root" "$(opencode_auth)" "$(opencode_base_url)" "$projects"
 }
 

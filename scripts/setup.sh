@@ -407,8 +407,7 @@ sync_projects() {
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "Dry run complete."
   else
-    echo "Ensuring project icons (required for client colour picker)..."
-    ensure_project_icons || true
+    assign_missing_project_colors || true
     echo "Sync done: +${ok_add} registered (${skip_add} skip), -${ok_rm} deregistered, fails add=${fail_add} rm=${fail_rm}."
     echo
     echo "Projects on server:"

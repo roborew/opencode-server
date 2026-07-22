@@ -408,13 +408,15 @@ git -C "$OPENCODE_APPS_DIR/<repo>" worktree list
 # should list the host worktree path, not "prunable"
 ```
 
-Chats/sessions stay on the `opencode-data` Docker volume. Wipe server state only:
+Chats/sessions stay on the `opencode-data` Docker volume. Wipe server state:
 
 ```bash
-./scripts/wipe-opencode-data.sh
+./scripts/wipe-opencode-data.sh --yes
+# Clean E2E / after path migrations (Desktop must be quit):
+./scripts/wipe-opencode-data.sh --yes --desktop
 ```
 
-That removes the named volume (DB/auth). It does **not** delete repos or host worktrees.
+That removes the named volume (DB/auth). `--desktop` also clears this server’s open-project list in OpenCode Desktop (macOS). It does **not** delete repos or host worktrees.
 ## Config updates
 
 | Change                              | Action                                                                              |
