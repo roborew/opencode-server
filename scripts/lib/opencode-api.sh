@@ -114,6 +114,17 @@ api_delete() {
   fi
 }
 
+api_patch() {
+  local path="$1"
+  local body="${2:-{}}"
+  local base
+  base="$(opencode_base_url)"
+  curl -sf -u "$(opencode_auth)" \
+    -H "Content-Type: application/json" \
+    -X PATCH "${base}${path}" \
+    -d "$body"
+}
+
 opencode_public_url() {
   local fqdn="${OPENCODE_FQDN:-opencode.local}"
   local port="${OPENCODE_PUBLISH_PORT:-4097}"
@@ -188,6 +199,51 @@ register_project() {
   body="$(python3 -c 'import json,sys; print(json.dumps({"title": sys.argv[1]}))' "$title")"
   api_post "/session" "$body" "X-Opencode-Directory: ${dir}" >/dev/null
   echo "ok"
+}
+
+# Seed icon.color when missing. Clients only enable the colour picker once icon exists
+# (session seed leaves icon null; Desktop-created projects usually already have one).
+ensure_project_icons() {
+  local root="${WORKSPACE_ROOT:-}"
+  local projects
+  projects="$(list_projects_json)"
+  python3 -c "
+import json, sys, urllib.request, base64
+root = sys.argv[1].rstrip('/')
+auth = sys.argv[2]
+base = sys.argv[3].rstrip('/')
+palette = ['orange','mint','pink','lime','purple','cyan','blue','red','amber','green']
+data = json.loads(sys.argv[4] or '[]')
+n = 0
+for p in data:
+    wt = (p.get('worktree') or '').rstrip('/')
+    if not root or not wt or wt == '/' or not (wt == root or wt.startswith(root + '/')):
+        continue
+    icon = p.get('icon') or {}
+    if isinstance(icon, dict) and icon.get('color'):
+        continue
+    pid = p.get('id') or ''
+    if not pid:
+        continue
+    color = palette[sum(ord(c) for c in pid) % len(palette)]
+    body = json.dumps({'icon': {'color': color}}).encode()
+    req = urllib.request.Request(
+        f'{base}/project/{pid}',
+        data=body,
+        method='PATCH',
+        headers={
+            'Authorization': 'Basic ' + base64.b64encode(auth.encode()).decode(),
+            'Content-Type': 'application/json',
+        },
+    )
+    try:
+        urllib.request.urlopen(req)
+        n += 1
+        print(f\"  icon {wt.rsplit('/', 1)[-1]} -> {color}\")
+    except Exception as exc:
+        print(f\"  icon skip {wt.rsplit('/', 1)[-1]}: {exc}\", file=sys.stderr)
+print(f\"Seeded icons: {n}\")
+" "$root" "$(opencode_auth)" "$(opencode_base_url)" "$projects"
 }
 
 # List sessions whose directory matches the worktree.
