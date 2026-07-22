@@ -393,7 +393,7 @@ docker exec opencode-server find "$OPENCODE_APPS_DIR" -name .git -type d -prune
 
 Set `OPENCODE_WORKTREES_DIR` in `.env` to an **absolute** host path ending in `/opencode/worktree` (Docker does not expand `~`). Desktop default: `~/.local/share/opencode/worktree`.
 
-Compose bind-mounts that host directory onto `/var/opencode-xdg/opencode/worktree` (OpenCode create path) and again at the same host path. Apps are mounted at `/workspace/apps` **and** `$OPENCODE_APPS_DIR` (same files) so existing project registrations keep working while host-path git/Tower links can use the Mac path. Sessions stay on the `opencode-data` volume under container XDG (`/var/opencode-xdg`) — not host `~/.local/share` — so Desktop and Docker MCP/indexing stay isolated.
+Compose bind-mounts that host directory onto `/var/opencode-xdg/opencode/worktree` (OpenCode create path) and again at the same host path so Tower / local Git see checkouts. Apps are same-path mounted at `$OPENCODE_APPS_DIR` only. Server DB/sessions/MCP auth live on the `opencode-data` named volume (not Desktop `~/.local/share`).
 
 After creating a worktree via Desktop, git link files are rewritten to host paths (`$OPENCODE_APPS_DIR` + `$OPENCODE_WORKTREES_DIR`) so Tower / local Git can open them. Verify:
 
@@ -401,17 +401,20 @@ After creating a worktree via Desktop, git link files are rewritten to host path
 # gitdir in the main repo must point under OPENCODE_WORKTREES_DIR (not /var/opencode-xdg)
 grep -r . "$OPENCODE_APPS_DIR/<repo>/.git/worktrees/"*/gitdir
 
-# worktree .git must point under OPENCODE_APPS_DIR (not /workspace/apps)
+# worktree .git must point under OPENCODE_APPS_DIR
 cat "$OPENCODE_WORKTREES_DIR"/…/<name>/.git
 
 git -C "$OPENCODE_APPS_DIR/<repo>" worktree list
 # should list the host worktree path, not "prunable"
 ```
 
-Chats/sessions stay on the `opencode-data` Docker volume (mounted at `/var/lib/opencode-data`, linked into the XDG data dir).
+Chats/sessions stay on the `opencode-data` Docker volume. Wipe server state only:
 
-**Migration:** workspaces still keyed to `/workspace/apps` or `/var/opencode-xdg/...` need re-register (`./scripts/setup.sh projects local`) and/or recreate. Do not `docker compose down -v`.
+```bash
+./scripts/wipe-opencode-data.sh
+```
 
+That removes the named volume (DB/auth). It does **not** delete repos or host worktrees.
 ## Config updates
 
 | Change                              | Action                                                                              |
@@ -457,7 +460,7 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 | Claude Context fails                       | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network; `COMPOSE_PROFILES=milvus`                                                                      |
 | Want lighter stack (no Milvus)             | Clear profile: `COMPOSE_PROFILES= docker compose up -d` (etcd/minio/milvus are under the `milvus` profile). Re-enable with `COMPOSE_PROFILES=milvus`. |
 | Workspace create/delete times out     | Ensure `OPENCODE_EXPERIMENTAL_WORKSPACES=true` (compose default). Without it, OpenCode never emits `workspace.status` and the API fails after 5s. Rebuild/restart after changing. |
-| Deleting a “sandbox” wiped the app repo | Dual mounts (`/workspace/apps` + host path) are the same inode. Delete-guard blocks DELETE of project roots; only worktree-store paths are removable. |
+| Deleting a “sandbox” wiped the app repo | Delete-guard blocks DELETE under `OPENCODE_APPS_DIR`; only worktree-store paths are removable. |
 | docs-mcp-server fails                      | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on the Docker host, or LAN IP)                                  |
 | localhost link 404 from agent              | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
 | Projects not in picker                     | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `$OPENCODE_APPS_DIR/...`                                         |
@@ -468,7 +471,7 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 | Provider auth missing                      | Fresh `opencode-data` volume — set API keys in `.env`/Infisical or migrate auth data                                                            |
 | Sessions missing after compose change      | Ensure `opencode-data` is still the named volume at `/var/lib/opencode-data` — never replace it with a host bind or use `docker compose down -v` |
 | Local Git / Tower worktree disconnected    | Recreate the workspace after same-path upgrade; confirm gitdir/.git use `$OPENCODE_APPS_DIR` and `$OPENCODE_WORKTREES_DIR` only                 |
-| Old workspace won't open                   | Was keyed to `/workspace/apps` or `/var/opencode-xdg/...` — re-run `projects local` and recreate that workspace                                 |
+| Old workspace won't open                   | Re-run `projects local` and recreate that workspace on `$OPENCODE_APPS_DIR` paths                                                              |
 
 ## Files
 

@@ -16,22 +16,46 @@ CONTAINER_XDG="${OPENCODE_CONTAINER_XDG:-/var/opencode-xdg}"
 CONTAINER_DATA="${CONTAINER_XDG}/opencode"
 CONTAINER_WT="${CONTAINER_DATA}/worktree"
 
+# Always back Docker OpenCode state with the named volume so
+# `docker compose down -v` actually wipes DB/auth/sessions.
+# Previously we only linked when the volume already had files; OpenCode then
+# created opencode.db on the container layer and "fresh volume" left it intact.
 link_volume_into_opencode_dir() {
   local opencode_dir="$1"
-  local name f
-  mkdir -p "$opencode_dir"
-  for name in storage snapshot log repos tool-output .pnpm-store \
-    auth.json mcp-auth.json account.json; do
-    if [[ -e "${VOLUME_DATA}/${name}" ]]; then
-      rm -rf "${opencode_dir}/${name}"
-      ln -sfn "${VOLUME_DATA}/${name}" "${opencode_dir}/${name}"
+  local name dest vol
+
+  mkdir -p "$opencode_dir" "$VOLUME_DATA"
+
+  _migrate_xdg_to_volume() {
+    dest="$1"
+    vol="$2"
+    if [[ -e "$dest" && ! -L "$dest" ]]; then
+      if [[ ! -e "$vol" ]]; then
+        mv "$dest" "$vol"
+      else
+        rm -rf "$dest"
+      fi
     fi
-  done
-  for f in "${VOLUME_DATA}"/opencode.db "${VOLUME_DATA}"/opencode.db-wal "${VOLUME_DATA}"/opencode.db-shm; do
-    [[ -e "$f" ]] || continue
-    name="$(basename "$f")"
+  }
+
+  for name in storage snapshot log repos tool-output .pnpm-store; do
+    mkdir -p "${VOLUME_DATA}/${name}"
+    _migrate_xdg_to_volume "${opencode_dir}/${name}" "${VOLUME_DATA}/${name}"
     rm -rf "${opencode_dir}/${name}"
-    ln -sfn "$f" "${opencode_dir}/${name}"
+    ln -sfn "${VOLUME_DATA}/${name}" "${opencode_dir}/${name}"
+  done
+
+  for name in auth.json mcp-auth.json account.json; do
+    _migrate_xdg_to_volume "${opencode_dir}/${name}" "${VOLUME_DATA}/${name}"
+    rm -rf "${opencode_dir}/${name}"
+    ln -sfn "${VOLUME_DATA}/${name}" "${opencode_dir}/${name}"
+  done
+
+  # Pre-link db + wal/shm so SQLite creates them on the volume (via symlink).
+  for name in opencode.db opencode.db-wal opencode.db-shm; do
+    _migrate_xdg_to_volume "${opencode_dir}/${name}" "${VOLUME_DATA}/${name}"
+    rm -rf "${opencode_dir}/${name}"
+    ln -sfn "${VOLUME_DATA}/${name}" "${opencode_dir}/${name}"
   done
 }
 

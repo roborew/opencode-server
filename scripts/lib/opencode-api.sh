@@ -9,8 +9,6 @@ CONTAINER_NAME="${OPENCODE_CONTAINER:-opencode-server}"
 CONTAINER_XDG_DATA_HOME="${OPENCODE_CONTAINER_XDG:-/var/opencode-xdg}"
 # Host apps path inside the container (same-path bind). Set after load_env.
 WORKSPACE_ROOT="${OPENCODE_WORKSPACE_ROOT:-${OPENCODE_APPS_DIR:-}}"
-# Pre-migration container path still present in older project rows
-LEGACY_WORKSPACE_ROOT="/workspace/apps"
 
 # Preflight counters (set by preflight.sh)
 PREFLIGHT_OK=0
@@ -18,36 +16,11 @@ PREFLIGHT_WARN=0
 PREFLIGHT_FAIL=0
 PREFLIGHT_MCP_NEEDS_AUTH=()
 
-# Map between host OPENCODE_APPS_DIR paths and legacy /workspace/apps registrations.
+# Ensure absolute host OPENCODE_APPS_DIR paths (identity if already host).
 to_host_workspace_path() {
   local dir="${1%/}"
   if [[ -n "${WORKSPACE_ROOT:-}" && ( "$dir" == "$WORKSPACE_ROOT" || "$dir" == "$WORKSPACE_ROOT"/* ) ]]; then
     echo "$dir"
-    return
-  fi
-  if [[ "$dir" == "$LEGACY_WORKSPACE_ROOT" ]]; then
-    echo "${WORKSPACE_ROOT}"
-    return
-  fi
-  if [[ "$dir" == "$LEGACY_WORKSPACE_ROOT"/* ]]; then
-    echo "${WORKSPACE_ROOT}/${dir#"${LEGACY_WORKSPACE_ROOT}/"}"
-    return
-  fi
-  echo "$dir"
-}
-
-to_legacy_workspace_path() {
-  local dir="${1%/}"
-  if [[ "$dir" == "$LEGACY_WORKSPACE_ROOT" || "$dir" == "$LEGACY_WORKSPACE_ROOT"/* ]]; then
-    echo "$dir"
-    return
-  fi
-  if [[ -n "${WORKSPACE_ROOT:-}" && "$dir" == "$WORKSPACE_ROOT" ]]; then
-    echo "$LEGACY_WORKSPACE_ROOT"
-    return
-  fi
-  if [[ -n "${WORKSPACE_ROOT:-}" && "$dir" == "$WORKSPACE_ROOT"/* ]]; then
-    echo "${LEGACY_WORKSPACE_ROOT}/${dir#"${WORKSPACE_ROOT}/"}"
     return
   fi
   echo "$dir"
@@ -188,26 +161,24 @@ list_projects_json() {
 
 project_registered() {
   local dir="$1"
-  local host legacy projects
+  local host projects
   host="$(to_host_workspace_path "$dir")"
-  legacy="$(to_legacy_workspace_path "$dir")"
   projects="$(list_projects_json)"
   python3 -c "
 import json, sys
-targets = {sys.argv[1].rstrip('/'), sys.argv[2].rstrip('/')}
-data = json.loads(sys.argv[3])
+target = sys.argv[1].rstrip('/')
+data = json.loads(sys.argv[2])
 for p in data:
     wt = (p.get('worktree') or p.get('directory') or '').rstrip('/')
-    if wt in targets:
+    if wt == target:
         sys.exit(0)
 sys.exit(1)
-" "$host" "$legacy" "$projects"
+" "$host" "$projects"
 }
 
 register_project() {
   local dir="$1"
   local title="${2:-$(basename "$dir")}"
-  # Always register at the host same-path (never /workspace/apps)
   dir="$(to_host_workspace_path "$dir")"
   if project_registered "$dir"; then
     echo "skip"
@@ -216,12 +187,6 @@ register_project() {
   local body
   body="$(python3 -c 'import json,sys; print(json.dumps({"title": sys.argv[1]}))' "$title")"
   api_post "/session" "$body" "X-Opencode-Directory: ${dir}" >/dev/null
-  # Drop leftover legacy /workspace/apps sessions for the same repo
-  local legacy
-  legacy="$(to_legacy_workspace_path "$dir")"
-  if [[ "$legacy" != "$dir" ]]; then
-    deregister_project "$legacy" >/dev/null 2>&1 || true
-  fi
   echo "ok"
 }
 
@@ -252,25 +217,20 @@ print(json.dumps(out))
 # (OpenCode has no project.delete; sessions are the registration mechanism.)
 deregister_project() {
   local dir="$1"
-  local host legacy path
-  host="$(to_host_workspace_path "$dir")"
-  legacy="$(to_legacy_workspace_path "$dir")"
+  local path
+  path="$(to_host_workspace_path "$dir")"
   local ok=0 fail=0
 
-  for path in "$host" "$legacy"; do
-    [[ -z "$path" ]] && continue
-    local sessions ids
-    sessions="$(list_sessions_for_directory "$path")"
-    ids="$(python3 -c "
+  local sessions ids
+  sessions="$(list_sessions_for_directory "$path")"
+  ids="$(python3 -c "
 import json, sys
 for s in json.loads(sys.argv[1] or '[]'):
     sid = s.get('id') or ''
     if sid:
         print(sid)
 " "$sessions")"
-    if [[ -z "$ids" ]]; then
-      continue
-    fi
+  if [[ -n "$ids" ]]; then
     local id
     while IFS= read -r id; do
       [[ -z "$id" ]] && continue
@@ -282,7 +242,7 @@ for s in json.loads(sys.argv[1] or '[]'):
         fail=$((fail + 1))
       fi
     done <<< "$ids"
-  done
+  fi
 
   if (( fail > 0 )); then
     echo "fail"
@@ -292,26 +252,20 @@ for s in json.loads(sys.argv[1] or '[]'):
 }
 
 list_registered_workspace_projects() {
-  # Print host-path registrations. Legacy /workspace/apps/* rows map to OPENCODE_APPS_DIR.
+  # Print host-path registrations under OPENCODE_APPS_DIR only.
   list_projects_json | python3 -c "
 import json, sys
 root = sys.argv[1].rstrip('/')
-legacy = sys.argv[2].rstrip('/')
 seen = set()
 for p in json.load(sys.stdin):
     wt = (p.get('worktree') or '').rstrip('/')
-    if not wt:
+    if not wt or not root:
         continue
     if wt == root or wt.startswith(root + '/'):
-        host = wt
-    elif wt == legacy or wt.startswith(legacy + '/'):
-        host = root + wt[len(legacy):]
-    else:
-        continue
-    if host not in seen:
-        seen.add(host)
-        print(host)
-" "$WORKSPACE_ROOT" "$LEGACY_WORKSPACE_ROOT"
+        if wt not in seen:
+            seen.add(wt)
+            print(wt)
+" "$WORKSPACE_ROOT"
 }
 
 list_mcp_json() {

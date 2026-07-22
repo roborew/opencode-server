@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Streaming reverse proxy that:
-1) Blocks DELETE of main app checkouts (dual /workspace + host mounts).
+1) Blocks DELETE of main app checkouts under OPENCODE_APPS_DIR.
 2) After workspace/worktree DELETE, finishes git cleanup (host-path rewrite
    makes OpenCode's own `git worktree remove` leave prunable admin entries).
 """
@@ -28,7 +28,6 @@ CONTAINER_WT = (
     or "/var/opencode-xdg/opencode/worktree"
 )
 HOST_WT = os.environ.get("OPENCODE_WORKTREES_DIR", "").rstrip("/")
-CONTAINER_APPS = "/workspace/apps"
 HOST_APPS = os.environ.get("OPENCODE_APPS_DIR", "").rstrip("/")
 CLEANUP_SCRIPT = "/usr/local/bin/rewrite-worktree-gitdirs.py"
 
@@ -45,12 +44,9 @@ def _is_protected_project_root(path: str) -> bool:
     path = (path or "").rstrip("/")
     if not path or _is_worktree_path(path):
         return False
-    for root in (CONTAINER_APPS, HOST_APPS):
-        if not root:
-            continue
-        if path == root or path.startswith(root + "/"):
-            return True
-    return False
+    if not HOST_APPS:
+        return False
+    return path == HOST_APPS or path.startswith(HOST_APPS + "/")
 
 
 def _blocked_worktree_delete(body: bytes) -> str | None:
@@ -156,7 +152,7 @@ class GuardHandler(BaseHTTPRequestHandler):
             if blocked:
                 msg = (
                     f"Refusing to delete project root {blocked} "
-                    "(dual mount — would wipe the real checkout). "
+                    "(would wipe the real checkout under OPENCODE_APPS_DIR). "
                     "Only paths under the OpenCode worktree store can be deleted."
                 )
                 payload = json.dumps(

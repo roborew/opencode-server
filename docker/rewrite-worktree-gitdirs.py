@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Rewrite git worktree links to host paths, and finish deletes for Tower/local Git.
 
-Create: OpenCode writes container paths (/var/opencode-xdg, /workspace/apps).
-  We rewrite those to OPENCODE_WORKTREES_DIR / OPENCODE_APPS_DIR so Tower works.
+Create: OpenCode writes container worktree paths under /var/opencode-xdg.
+  We rewrite those to OPENCODE_WORKTREES_DIR so Tower / local Git work.
+Apps are same-path at OPENCODE_APPS_DIR only.
 
 Delete: OpenCode removes the checkout dir but often leaves .git/worktrees metadata
   (path mismatch after rewrite) → Tower still shows the worktree as prunable.
@@ -24,7 +25,6 @@ CONTAINER_WT = (
     or "/var/opencode-xdg/opencode/worktree"
 )
 HOST_WT = os.environ.get("OPENCODE_WORKTREES_DIR", "").rstrip("/")
-CONTAINER_APPS = "/workspace/apps"
 HOST_APPS = os.environ.get("OPENCODE_APPS_DIR", "").rstrip("/")
 
 
@@ -50,14 +50,6 @@ def to_container_worktree(path: str) -> str:
     return path
 
 
-def to_host_apps(text: str) -> str:
-    if not HOST_APPS:
-        return text
-    if CONTAINER_APPS in text:
-        return text.replace(CONTAINER_APPS, HOST_APPS)
-    return text
-
-
 def _run_git(repo: Path, args: list[str]) -> tuple[int, str]:
     try:
         proc = subprocess.run(
@@ -74,9 +66,9 @@ def _run_git(repo: Path, args: list[str]) -> tuple[int, str]:
 
 
 def _iter_repos() -> list[Path]:
-    apps_root = Path(CONTAINER_APPS)
-    if not apps_root.is_dir() and HOST_APPS:
-        apps_root = Path(HOST_APPS)
+    if not HOST_APPS:
+        return []
+    apps_root = Path(HOST_APPS)
     if not apps_root.is_dir():
         return []
     repos: list[Path] = []
@@ -140,7 +132,7 @@ def rewrite_gitdirs() -> int:
                 content = git_file.read_text(encoding="utf-8")
             except OSError:
                 continue
-            new_content = to_host_apps(content)
+            new_content = content
             if CONTAINER_WT in new_content and HOST_WT:
                 new_content = new_content.replace(CONTAINER_WT, HOST_WT)
             if new_content == content:
@@ -166,11 +158,6 @@ def _infer_repo_for_name(name: str, project: str | None) -> Path | None:
         p = Path(project)
         if (p / ".git").exists():
             return p
-        # project may be container apps path
-        if HOST_APPS and str(p).startswith(CONTAINER_APPS):
-            mapped = Path(HOST_APPS + str(p)[len(CONTAINER_APPS) :])
-            if (mapped / ".git").exists():
-                return mapped
     marker = f"/.git/worktrees/{name}"
     for repo in _iter_repos():
         if (repo / ".git" / "worktrees" / name).is_dir():
@@ -210,25 +197,11 @@ def _is_worktree_root(path: str) -> bool:
 
 
 def _is_protected_project_root(path: str) -> bool:
-    """Refuse to delete main app checkouts (dual /workspace + host mounts).
-
-    OpenCode sometimes lists `/workspace/apps/<repo>` as a "sandbox" of the
-    host-path project. Both paths are the same inode — deleting that
-    "sandbox" wipes the real repo.
-    """
+    """Refuse to delete main app checkouts under OPENCODE_APPS_DIR."""
     path = (path or "").rstrip("/")
-    if not path or _is_worktree_root(path):
+    if not path or _is_worktree_root(path) or not HOST_APPS:
         return False
-    for root in (CONTAINER_APPS, HOST_APPS):
-        if not root:
-            continue
-        if path == root:
-            return True
-        if path.startswith(root + "/"):
-            # Any path under apps that is not a worktree store is a project root
-            # (or nested app). Never rm -rf these from our cleanup helpers.
-            return True
-    return False
+    return path == HOST_APPS or path.startswith(HOST_APPS + "/")
 
 
 def _delete_branch(repo: Path, branch: str) -> bool:
@@ -423,13 +396,7 @@ def prune_orphans() -> int:
 
 
 def scrub_sandboxes_db() -> int:
-    """Drop dual-mount project roots from project.sandboxes in the OpenCode DB.
-
-    OpenCode sometimes records `/workspace/apps/<repo>` as a sandbox of the
-    host-path project (same inode). That makes Desktop offer a delete that
-    would wipe the real checkout. We cannot stop OpenCode from writing it,
-    but we can scrub it out of the DB so the UI stops listing it.
-    """
+    """Drop protected app roots and missing paths from project.sandboxes."""
     candidates = [
         Path("/var/lib/opencode-data/opencode.db"),
         Path("/var/opencode-xdg/opencode/opencode.db"),
@@ -456,17 +423,9 @@ def scrub_sandboxes_db() -> int:
             if not isinstance(sandboxes, list) or not sandboxes:
                 continue
             kept = [s for s in sandboxes if not _is_protected_project_root(str(s))]
-            # Also drop sandboxes that are the same path identity as the project
-            # worktree (string twin), even if mapping missed.
             wt = (worktree or "").rstrip("/")
-            twin = None
-            if HOST_APPS and wt.startswith(HOST_APPS + "/"):
-                twin = CONTAINER_APPS + wt[len(HOST_APPS) :]
-            elif wt.startswith(CONTAINER_APPS + "/"):
-                if HOST_APPS:
-                    twin = HOST_APPS + wt[len(CONTAINER_APPS) :]
-            if twin:
-                kept = [s for s in kept if str(s).rstrip("/") != twin]
+            if wt:
+                kept = [s for s in kept if str(s).rstrip("/") != wt]
 
             # Drop sandboxes whose checkout no longer exists (workspace delete
             # often clears git but leaves the path in project.sandboxes).

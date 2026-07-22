@@ -45,6 +45,9 @@ Each projects run (unless --skip-bootstrap):
   4) Prints web deep links for each host-path project
      (does not touch OpenCode.app — attach that client later yourself)
 
+Wipe Docker server DB/auth only (keeps Desktop + repos + host worktrees):
+  ./scripts/wipe-opencode-data.sh
+
 Examples:
   ./scripts/setup.sh
   ./scripts/setup.sh projects local
@@ -315,7 +318,6 @@ _path_in_list() {
 }
 
 # Sync server to exactly the desired host-path project dirs (OPENCODE_APPS_DIR).
-# Legacy /workspace/apps registrations are treated as the same projects.
 sync_projects() {
   local -a desired=("$@")
   local -a current=()
@@ -431,10 +433,10 @@ run_bootstrap_only() {
     [[ -n "$line" ]] && dirs+=("$line")
   done < <(workspace_projects_from_server)
   if [[ ${#dirs[@]} -eq 0 ]]; then
-    echo "No /workspace projects registered yet. Run: ./scripts/setup.sh projects local" >&2
+    echo "No projects registered yet. Run: ./scripts/setup.sh projects local" >&2
     exit 1
   fi
-  echo "Bootstrapping ${#dirs[@]} registered /workspace project(s)..."
+  echo "Bootstrapping ${#dirs[@]} registered project(s)..."
   run_client_bootstrap "${dirs[@]}"
 }
 

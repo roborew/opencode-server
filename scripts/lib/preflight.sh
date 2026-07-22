@@ -24,6 +24,7 @@ run_preflight() {
   check_opencode_health
   check_workspace_mount
   check_worktree_mount
+  check_opencode_data_volume
   check_milvus
   check_gh_auth
   check_coderabbit_auth
@@ -121,6 +122,20 @@ check_workspace_mount() {
     preflight_record ok "workspace mount ${WORKSPACE_ROOT} (${count} entries)"
   else
     preflight_record fail "workspace mount missing at ${WORKSPACE_ROOT}" "check OPENCODE_APPS_DIR same-path bind in compose"
+  fi
+}
+
+check_opencode_data_volume() {
+  if ! container_running; then
+    return
+  fi
+  # DB/auth must live on the named volume (entrypoint symlinks into XDG).
+  if docker_exec sh -c 'test -L /var/opencode-xdg/opencode/opencode.db && readlink /var/opencode-xdg/opencode/opencode.db | grep -q /var/lib/opencode-data/' 2>/dev/null; then
+    preflight_record ok "opencode.db linked to opencode-data volume"
+  else
+    preflight_record warn \
+      "opencode.db not linked to opencode-data volume" \
+      "./scripts/wipe-opencode-data.sh  # rebuild entrypoint + fresh volume"
   fi
 }
 

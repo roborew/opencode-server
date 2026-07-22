@@ -51,19 +51,18 @@ services:
       XDG_DATA_HOME: /var/opencode-xdg
       OPENCODE_CONTAINER_XDG: /var/opencode-xdg
     volumes:
-      # Sessions/auth/db on named volume; entrypoint links into /var/opencode-xdg/opencode
-      # (container XDG — isolated from Desktop ~/.local/share).
-      # Worktrees: host dir → container create path + same-path for local Git.
-      # Apps: /workspace/apps (legacy project registrations) + same-path host bind.
+      # Server state (DB/sessions/MCP auth) — named volume only; wipe with
+      # ./scripts/wipe-opencode-data.sh or `docker compose down -v`.
+      # Repos: host same-path bind (code only).
+      # Worktrees: host dir for Tower/local Git + container create path.
       - opencode-data:/var/lib/opencode-data
       - ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:/var/opencode-xdg/opencode/worktree:delegated
       - ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:delegated
-      - ${OPENCODE_APPS_DIR:-${HOME}/projects}:/workspace/apps:delegated
       - ${OPENCODE_APPS_DIR:-${HOME}/projects}:${OPENCODE_APPS_DIR:-${HOME}/projects}:delegated
       # Optional: only mount the host SSH agent socket when set. Empty
       # SSH_AUTH_SOCK skips the bind entirely (container uses GH_TOKEN for git).
       - ${SSH_AUTH_SOCK:-/dev/null}:/ssh-agent
-    working_dir: /workspace/apps
+    working_dir: ${OPENCODE_APPS_DIR:-${HOME}/projects}
     depends_on:
       milvus-standalone:
         condition: service_healthy
