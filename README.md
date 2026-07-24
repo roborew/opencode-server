@@ -355,7 +355,7 @@ On the Cloudflare authorize screen, grant **least privilege**: **DNS Write** is 
 | Account → Account Settings (or Account Resources) | Read             | Discover account ID / list accounts                     |
 | Workers Scripts, KV, R2, D1, Pages, Firewall, …   | Read (optional)  | Inspect config without changing it                      |
 
-**Usually skip (unless you explicitly need them):** Billing, User Admin, Account Edit, Workers Scripts Edit, Firewall Edit, Access Edit, SSL/TLS Edit, Cache Purge — those are high-impact writes.
+**Usually skip (unless you explicitly need them):** Billing, User Admin, Account Edit, Workers Scripts Edit, Firewall Edit, Access Edit, SSL/TLS Edit, Cache Purge, **Tunnel Create/Edit** (host cloudflared is enough for review URLs) — those are high-impact writes.
 
 **Add later if needed:**
 
@@ -366,7 +366,13 @@ On the Cloudflare authorize screen, grant **least privilege**: **DNS Write** is 
 | Page Rules / Cache Purge  | Cache or routing changes                |
 | Firewall / WAF Edit       | Security rule changes                   |
 
-Re-run `opencode mcp auth cloudflare-api` after changing scopes (or revoke the prior grant in the Cloudflare dashboard).
+Re-run after changing scopes:
+
+```bash
+./scripts/setup.sh mcp-auth cloudflare-api
+```
+
+Or revoke the prior grant in the Cloudflare dashboard, then re-auth.
 
 ### Project modes
 
@@ -538,19 +544,71 @@ sandbox create --id feat-slug --worktree /absolute/path/to/repo
 sandbox exec --id feat-slug -- docker compose -f docker-compose.test.yml run --rm test
 sandbox status --id feat-slug
 sandbox destroy --id feat-slug
-# expose / unexpose — Phase 2 stubs (Traefik + Cloudflare Tunnel); not implemented yet
+sandbox expose --id feat-slug --port 3000 --hostname feat-slug.example.com
+sandbox unexpose --id feat-slug
 ```
 
 Exit code `2` / JSON `"reason":"SANDBOX_UNAVAILABLE"` means sandboxes are off — treat as a soft skip unless the stage explicitly requires Compose.
 
-OpenCode config skill wiring (agents/skills in `roborew/opencode`) is a separate change — use the copy-paste prompt in [`docs/opencode-config-docker-sandbox-prompt.md`](docs/opencode-config-docker-sandbox-prompt.md).
+OpenCode config skill: [`docs/opencode-config-docker-sandbox-prompt.md`](docs/opencode-config-docker-sandbox-prompt.md) (also live in `roborew/opencode` as `skills/docker-sandbox`).
 
-### Phase 1 / Phase 2
+### Review URLs (Phase 2) — existing Traefik + host Cloudflare Tunnel
 
-| Phase 1 (this release) | Phase 2 (hooks only) |
-| ---------------------- | -------------------- |
-| Build/test via sibling nested Docker | Traefik labels + persistent Cloudflare Tunnel + dynamic review hostnames |
-| `expose`/`unexpose` stubbed | Wire DNS + Tunnel Edit OAuth scopes |
+**One host tunnel is enough.** Install **`cloudflared` via apt/CLI on Ubuntu** (preferred over Docker cloudflared). Point that tunnel at Traefik. Then any number of zones/subdomains can CNAME to the tunnel; Traefik routes by `Host()`.
+
+Do **not** add cloudflared to this compose stack. Do **not** create a tunnel per feature branch.
+
+**Host setup (link out):**
+
+1. Confirm Traefik already routes other containers on a shared Docker network.
+2. [Install cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (Linux package).
+3. [Create a tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/) and [run as a service](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/local-management/as-a-service/).
+4. [Configure](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/) ingress / public hostname to Traefik.
+5. [DNS to tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/routing-to-tunnel/) — apex and/or `*.apex` wildcards; otherwise the agent upserts `{feature}.{apex}` when `OPENCODE_SANDBOX_REVIEW_DNS=on`.
+
+**This stack env (sandbox overlay):**
+
+```bash
+OPENCODE_SANDBOX_TRAEFIK_NETWORK=traefik   # must match Traefik’s Docker network
+OPENCODE_SANDBOX_TRAEFIK_ENTRYPOINT=websecure
+# OPENCODE_SANDBOX_TRAEFIK_CERTRESOLVER=  # optional
+OPENCODE_SANDBOX_REVIEW_DNS=on
+```
+
+Hostname pattern: **`{feature-slug}.{app-apex-domain}`** (e.g. `blockshed.blockshared.com`). Skill supplies `--hostname`; nested compose must **publish** the app port on the sibling.
+
+```bash
+sandbox expose --id blockshed --port 3000 --hostname blockshed.blockshared.com
+# → host route helper + Traefik labels; DNS via cloudflare-api MCP when REVIEW_DNS=on
+sandbox unexpose --id blockshed
+sandbox destroy --id blockshed   # unexpose first
+```
+
+**Cloudflare MCP scopes:** Zone **DNS Edit** for review hostnames. Re-auth after changing scopes:
+
+```bash
+./scripts/setup.sh mcp-auth cloudflare-api
+```
+
+Do not require Tunnel Create/Edit for this workflow (host tunnel is already running).
+
+### App Infisical / `.env` for sandbox builds
+
+OpenCode server Infisical (`infisical run` in the entrypoint) does **not** inject secrets into Sysbox sibling builds. Each app repo needs its own **`.env`** on the mounted path (visible inside the sibling).
+
+**Setup** (`projects local|github`): for each selected repo, if `.env` is missing, offer to **create** it and **paste** vars (Infisical + anything else). Never copy from `.env.example`. Preflight warns when repos lack `.env` or Infisical key names.
+
+```bash
+./scripts/setup.sh projects local
+# … create .env + paste KEY=value lines, end with a line containing only: .
+```
+
+### Phase summary
+
+| Build/test | Web review |
+| ---------- | ---------- |
+| Sysbox sibling + repo Compose | Route helper + Traefik labels + existing tunnel |
+| Needs per-repo `.env` (Infisical) | Hostname `{feature}.{apex}`; DNS optional via MCP |
 
 ## Troubleshooting
 
@@ -579,6 +637,9 @@ OpenCode config skill wiring (agents/skills in `roborew/opencode`) is a separate
 | Sandbox mode=on but setup fails            | Install Sysbox CE; confirm `sysbox-runc` in `docker info` runtimes; re-run `./scripts/setup.sh sandbox`                                      |
 | Sandbox enabled but no sock in container   | Ensure `COMPOSE_FILE` includes `docker-compose.sandbox.yml`, then `docker compose up -d`                                                      |
 | Sandbox image missing                      | `./scripts/sandbox/build-image.sh` (tags `OPENCODE_SANDBOX_IMAGE`, default `opencode-sandbox:local`)                                           |
+| Expose: Traefik network not found          | Set `OPENCODE_SANDBOX_TRAEFIK_NETWORK` to Traefik’s Docker network name; recreate OpenCode with sandbox overlay                                |
+| Repo sandbox build lacks secrets           | `./scripts/setup.sh projects local` — create `.env` + paste Infisical vars (not `.env.example`)                                                |
+| Cloudflare DNS write denied                | `./scripts/setup.sh mcp-auth cloudflare-api` and grant Zone DNS Edit                                                                           |
 
 ## Files
 
@@ -588,17 +649,17 @@ OpenCode config skill wiring (agents/skills in `roborew/opencode`) is a separate
 ├── docker-compose.yml
 ├── docker-compose.sandbox.yml   # Optional overlay (socket + ENABLED=1); Mac never loads by default
 ├── scripts/
-│   ├── setup.sh                 # Post-compose: sandbox configure + preflight + project sync + hosts
-│   ├── doctor-perf.sh           # Host MCP leak / docker stats / Desktop app-data snapshot
+│   ├── setup.sh                 # sandbox configure + mcp-auth + preflight + projects + .env paste
+│   ├── doctor-perf.sh
 │   ├── sandbox/
-│   │   ├── sandbox              # CLI: probe|create|exec|status|destroy (+ expose stubs)
+│   │   ├── sandbox              # probe|create|exec|status|destroy|expose|unexpose
 │   │   ├── build-image.sh
 │   │   └── smoke-test.sh
-│   └── lib/                     # opencode-api, preflight, sandbox-enable, select, client-bootstrap
+│   └── lib/                     # opencode-api, preflight, sandbox-enable, repo-env, …
 ├── docker/
 │   ├── entrypoint.sh
 │   ├── sandbox/
-│   │   ├── Dockerfile           # Sysbox sibling image (nested Docker)
+│   │   ├── Dockerfile
 │   │   └── fixtures/compose-smoke/
 │   ├── merge-config.py
 │   └── plugins/

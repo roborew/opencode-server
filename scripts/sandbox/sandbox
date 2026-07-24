@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# sandbox — Sysbox sibling lifecycle for OpenCode (Phase 1 build/test).
-# Phase 2: expose/unexpose are stubs that preserve the hook surface.
+# sandbox — Sysbox sibling lifecycle for OpenCode (build/test + Traefik expose).
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 STATE_DIR="${OPENCODE_SANDBOX_STATE_DIR:-${XDG_DATA_HOME:-/var/opencode-xdg}/sandboxes}"
 IMAGE="${OPENCODE_SANDBOX_IMAGE:-opencode-sandbox:local}"
 RUNTIME="${OPENCODE_SANDBOX_RUNTIME:-sysbox-runc}"
 NAME_PREFIX="opencode-sandbox"
+ROUTE_PREFIX="opencode-sandbox-route"
 READY_TIMEOUT_SEC="${OPENCODE_SANDBOX_READY_TIMEOUT:-120}"
+TRAEFIK_NETWORK="${OPENCODE_SANDBOX_TRAEFIK_NETWORK:-traefik}"
+TRAEFIK_ENTRYPOINT="${OPENCODE_SANDBOX_TRAEFIK_ENTRYPOINT:-websecure}"
+TRAEFIK_CERTRESOLVER="${OPENCODE_SANDBOX_TRAEFIK_CERTRESOLVER:-}"
+ROUTE_IMAGE="${OPENCODE_SANDBOX_ROUTE_IMAGE:-alpine/socat:1.8.0.0}"
 
 usage() {
   cat <<'EOF'
@@ -16,24 +20,27 @@ Usage: sandbox <command> [options]
 
 Commands:
   probe                         Check if Sysbox siblings are available (JSON)
-  create --id <slug> --worktree <abs-path> [--network <name>] ...
+  create --id <slug> --worktree <abs-path> [--network <name>]
   exec   --id <slug> -- <command...>
-  status --id <slug>            JSON status for one sandbox (or --all)
-  destroy --id <slug>           Stop/remove sibling + clear state
-  expose / unexpose             Phase 2 stubs (not implemented)
+  status --id <slug> | --all
+  destroy --id <slug>           Unexpose then stop/remove sibling
+  expose --id <slug> --port <n> --hostname <fqdn> [--entrypoint <name>]
+  unexpose --id <slug>          Remove Traefik route helper only
   version                       Print CLI version
   help                          Show this help
 
 Env:
-  OPENCODE_SANDBOX_ENABLED=0|1  Must be 1 for create/exec (probe reports available)
-  OPENCODE_SANDBOX_IMAGE        Sibling image (default opencode-sandbox:local)
-  OPENCODE_SANDBOX_RUNTIME      Docker runtime (default sysbox-runc)
-  OPENCODE_SANDBOX_STATE_DIR    State JSON dir
+  OPENCODE_SANDBOX_ENABLED=0|1
+  OPENCODE_SANDBOX_IMAGE / RUNTIME / STATE_DIR
+  OPENCODE_SANDBOX_TRAEFIK_NETWORK (default traefik)
+  OPENCODE_SANDBOX_TRAEFIK_ENTRYPOINT (default websecure)
+  OPENCODE_SANDBOX_TRAEFIK_CERTRESOLVER (optional)
+  OPENCODE_SANDBOX_ROUTE_IMAGE (default alpine/socat:1.8.0.0)
 
 Exit codes:
   0  success / available
   1  general error
-  2  SANDBOX_UNAVAILABLE (mode off, no socket, or no sysbox-runc)
+  2  SANDBOX_UNAVAILABLE
 EOF
 }
 
@@ -50,13 +57,15 @@ emit_unavailable() {
 }
 
 container_name() {
-  local id="$1"
-  echo "${NAME_PREFIX}-${id}"
+  echo "${NAME_PREFIX}-${1}"
+}
+
+route_name() {
+  echo "${ROUTE_PREFIX}-${1}"
 }
 
 state_path() {
-  local id="$1"
-  echo "${STATE_DIR}/${id}.json"
+  echo "${STATE_DIR}/${1}.json"
 }
 
 require_docker() {
@@ -95,17 +104,25 @@ cmd_probe() {
     emit_unavailable "SANDBOX_UNAVAILABLE" "sysbox-runc not in Docker runtimes"
     return 2
   fi
+  local traefik_ok="false"
+  if docker network inspect "$TRAEFIK_NETWORK" >/dev/null 2>&1; then
+    traefik_ok="true"
+  fi
   if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    printf '{"available":true,"ready":false,"warning":%s,"image":%s,"runtime":%s}\n' \
+    printf '{"available":true,"ready":false,"warning":%s,"image":%s,"runtime":%s,"traefik_network":%s,"traefik_network_exists":%s}\n' \
       "$(json_escape "sandbox image missing — build with scripts/sandbox/build-image.sh")" \
       "$(json_escape "$IMAGE")" \
-      "$(json_escape "$RUNTIME")"
+      "$(json_escape "$RUNTIME")" \
+      "$(json_escape "$TRAEFIK_NETWORK")" \
+      "$traefik_ok"
     return 0
   fi
-  printf '{"available":true,"ready":true,"image":%s,"runtime":%s,"state_dir":%s}\n' \
+  printf '{"available":true,"ready":true,"image":%s,"runtime":%s,"state_dir":%s,"traefik_network":%s,"traefik_network_exists":%s}\n' \
     "$(json_escape "$IMAGE")" \
     "$(json_escape "$RUNTIME")" \
-    "$(json_escape "$STATE_DIR")"
+    "$(json_escape "$STATE_DIR")" \
+    "$(json_escape "$TRAEFIK_NETWORK")" \
+    "$traefik_ok"
   return 0
 }
 
@@ -116,6 +133,10 @@ write_state() {
   local name
   name="$(container_name "$id")"
   mkdir -p "$STATE_DIR"
+  local expose_json="null"
+  if [[ -f "$(state_path "$id")" ]]; then
+    expose_json="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d.get("expose")))' "$(state_path "$id")" 2>/dev/null || echo null)"
+  fi
   cat >"$(state_path "$id")" <<EOF
 {
   "id": $(json_escape "$id"),
@@ -125,9 +146,59 @@ write_state() {
   "image": $(json_escape "$IMAGE"),
   "runtime": $(json_escape "$RUNTIME"),
   "updated_at": $(json_escape "$(date -u +%Y-%m-%dT%H:%M:%SZ)"),
-  "expose": null
+  "expose": ${expose_json}
 }
 EOF
+}
+
+write_expose_state() {
+  local id="$1"
+  local hostname="$2"
+  local port="$3"
+  local route="$4"
+  local url="$5"
+  local path
+  path="$(state_path "$id")"
+  mkdir -p "$STATE_DIR"
+  if [[ ! -f "$path" ]]; then
+    write_state "$id" "ready" ""
+  fi
+  python3 - "$path" "$hostname" "$port" "$route" "$url" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+path, hostname, port, route, url = sys.argv[1:6]
+with open(path) as f:
+    d = json.load(f)
+d["expose"] = {
+    "hostname": hostname,
+    "port": int(port),
+    "route_container": route,
+    "url": url,
+}
+d["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+with open(path, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+PY
+}
+
+clear_expose_state() {
+  local id="$1"
+  local path
+  path="$(state_path "$id")"
+  [[ -f "$path" ]] || return 0
+  python3 - "$path" <<'PY'
+import json, sys
+from datetime import datetime, timezone
+path = sys.argv[1]
+with open(path) as f:
+    d = json.load(f)
+d["expose"] = None
+d["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+with open(path, "w") as f:
+    json.dump(d, f, indent=2)
+    f.write("\n")
+PY
 }
 
 wait_nested_docker() {
@@ -148,17 +219,11 @@ parse_create_args() {
   CREATE_ID=""
   CREATE_WORKTREE=""
   CREATE_NETWORK=""
-  CREATE_EXTRA=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --id) CREATE_ID="$2"; shift 2 ;;
       --worktree) CREATE_WORKTREE="$2"; shift 2 ;;
       --network) CREATE_NETWORK="$2"; shift 2 ;;
-      --)
-        shift
-        CREATE_EXTRA+=("$@")
-        break
-        ;;
       -h|--help) usage; exit 0 ;;
       *)
         echo "sandbox create: unknown arg: $1" >&2
@@ -220,7 +285,6 @@ cmd_create() {
     --label "opencode.sandbox=true"
     --label "opencode.sandbox.id=${CREATE_ID}"
     --label "opencode.sandbox.worktree=${CREATE_WORKTREE}"
-    # Reserved Traefik keys (Phase 2) — unused until expose is implemented.
     --label "opencode.sandbox.traefik.enable=false"
     -v "${CREATE_WORKTREE}:${CREATE_WORKTREE}:rw"
     -w "$CREATE_WORKTREE"
@@ -231,7 +295,6 @@ cmd_create() {
     run_args+=(--network "$CREATE_NETWORK")
   fi
 
-  # systemd + dockerd entrypoint for Nestybox-style images
   run_args+=("$IMAGE" /sbin/init)
 
   if ! docker "${run_args[@]}"; then
@@ -279,7 +342,6 @@ cmd_exec() {
     echo "sandbox: no container ${name} — run create first" >&2
     return 1
   fi
-  # Prefer worktree cwd from labels
   local worktree
   worktree="$(docker inspect -f '{{index .Config.Labels "opencode.sandbox.worktree"}}' "$name" 2>/dev/null || true)"
   if [[ -n "$worktree" ]]; then
@@ -345,6 +407,119 @@ print(json.dumps(base))
 PY
 }
 
+cmd_unexpose() {
+  local id=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id) id="$2"; shift 2 ;;
+      *) id="${1:-}"; shift ;;
+    esac
+  done
+  if [[ -z "$id" ]]; then
+    echo "sandbox unexpose: --id <slug> required" >&2
+    return 1
+  fi
+  require_docker || return $?
+  local route
+  route="$(route_name "$id")"
+  if docker inspect "$route" >/dev/null 2>&1; then
+    docker rm -f "$route" >/dev/null 2>&1 || true
+  fi
+  clear_expose_state "$id"
+  printf '{"id":%s,"expose":null,"status":"unexposed"}\n' "$(json_escape "$id")"
+}
+
+cmd_expose() {
+  local id="" port="" hostname="" entrypoint="$TRAEFIK_ENTRYPOINT"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id) id="$2"; shift 2 ;;
+      --port) port="$2"; shift 2 ;;
+      --hostname) hostname="$2"; shift 2 ;;
+      --entrypoint) entrypoint="$2"; shift 2 ;;
+      -h|--help)
+        echo "sandbox expose --id <slug> --port <n> --hostname <fqdn> [--entrypoint websecure]"
+        return 0
+        ;;
+      *)
+        echo "sandbox expose: unknown arg: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+  if [[ -z "$id" || -z "$port" || -z "$hostname" ]]; then
+    echo "sandbox expose: --id, --port, and --hostname are required" >&2
+    return 1
+  fi
+  if [[ ! "$port" =~ ^[0-9]+$ ]]; then
+    echo "sandbox expose: --port must be a number" >&2
+    return 1
+  fi
+  if [[ "${OPENCODE_SANDBOX_ENABLED:-0}" != "1" ]]; then
+    emit_unavailable "SANDBOX_UNAVAILABLE" "OPENCODE_SANDBOX_ENABLED!=1" >&2
+    return 2
+  fi
+  require_docker || return $?
+
+  local name route router_id
+  name="$(container_name "$id")"
+  route="$(route_name "$id")"
+  router_id="$(echo "ocsb-${id}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')"
+
+  if ! docker inspect "$name" >/dev/null 2>&1; then
+    echo "sandbox: no sibling ${name} — create first" >&2
+    return 1
+  fi
+  if [[ "$(docker inspect -f '{{.State.Status}}' "$name")" != "running" ]]; then
+    echo "sandbox: sibling ${name} is not running" >&2
+    return 1
+  fi
+  if ! docker network inspect "$TRAEFIK_NETWORK" >/dev/null 2>&1; then
+    echo "sandbox: Traefik network '${TRAEFIK_NETWORK}' not found (set OPENCODE_SANDBOX_TRAEFIK_NETWORK)" >&2
+    return 1
+  fi
+
+  docker network connect "$TRAEFIK_NETWORK" "$name" >/dev/null 2>&1 || true
+  docker rm -f "$route" >/dev/null 2>&1 || true
+
+  local -a labels=(
+    --label "opencode.sandbox=true"
+    --label "opencode.sandbox.route=true"
+    --label "opencode.sandbox.id=${id}"
+    --label "traefik.enable=true"
+    --label "traefik.docker.network=${TRAEFIK_NETWORK}"
+    --label "traefik.http.routers.${router_id}.rule=Host(\`${hostname}\`)"
+    --label "traefik.http.routers.${router_id}.entrypoints=${entrypoint}"
+    --label "traefik.http.routers.${router_id}.service=${router_id}"
+    --label "traefik.http.services.${router_id}.loadbalancer.server.port=80"
+  )
+  if [[ -n "$TRAEFIK_CERTRESOLVER" ]]; then
+    labels+=(--label "traefik.http.routers.${router_id}.tls.certresolver=${TRAEFIK_CERTRESOLVER}")
+    labels+=(--label "traefik.http.routers.${router_id}.tls=true")
+  fi
+
+  if ! docker run -d \
+    --name "$route" \
+    --network "$TRAEFIK_NETWORK" \
+    --restart unless-stopped \
+    "${labels[@]}" \
+    "$ROUTE_IMAGE" \
+    TCP-LISTEN:80,fork,reuseaddr "TCP:${name}:${port}"; then
+    echo "sandbox: failed to start route helper ${route}" >&2
+    echo "sandbox: ensure image ${ROUTE_IMAGE} is pullable" >&2
+    return 1
+  fi
+
+  local url="https://${hostname}"
+  write_expose_state "$id" "$hostname" "$port" "$route" "$url"
+  printf '{"id":%s,"hostname":%s,"port":%s,"route_container":%s,"url":%s,"status":"exposed"}\n' \
+    "$(json_escape "$id")" \
+    "$(json_escape "$hostname")" \
+    "$(json_escape "$port")" \
+    "$(json_escape "$route")" \
+    "$(json_escape "$url")"
+}
+
 cmd_destroy() {
   local id=""
   while [[ $# -gt 0 ]]; do
@@ -358,22 +533,16 @@ cmd_destroy() {
     return 1
   fi
   require_docker || return $?
+  cmd_unexpose --id "$id" >/dev/null 2>&1 || true
   local name
   name="$(container_name "$id")"
   write_state "$id" "destroying" "$(docker inspect -f '{{index .Config.Labels "opencode.sandbox.worktree"}}' "$name" 2>/dev/null || echo "")"
-  # Best-effort: stop nested compose projects inside before rm
   if docker inspect "$name" >/dev/null 2>&1; then
     docker exec "$name" sh -c 'docker ps -aq | xargs -r docker rm -f' >/dev/null 2>&1 || true
     docker rm -f "$name" >/dev/null 2>&1 || true
   fi
   rm -f "$(state_path "$id")"
   printf '{"id":%s,"status":"gone"}\n' "$(json_escape "$id")"
-}
-
-cmd_expose_stub() {
-  echo "sandbox: expose/unexpose not implemented (Phase 2 — Traefik + Cloudflare Tunnel hooks)" >&2
-  printf '{"implemented":false,"phase":2,"message":"not implemented yet"}\n'
-  return 1
 }
 
 main() {
@@ -385,7 +554,8 @@ main() {
     exec) cmd_exec "$@" ;;
     status) cmd_status "$@" ;;
     destroy) cmd_destroy "$@" ;;
-    expose|unexpose) cmd_expose_stub "$@" ;;
+    expose) cmd_expose "$@" ;;
+    unexpose) cmd_unexpose "$@" ;;
     version|--version) echo "sandbox ${VERSION}" ;;
     help|-h|--help) usage ;;
     *)

@@ -61,8 +61,25 @@ echo "== sandbox exec compose test =="
 run_sandbox exec --id "$SMOKE_ID" -- \
   docker compose -f docker-compose.test.yml run --rm test
 
+if [[ "${SMOKE_EXPOSE:-0}" == "1" ]]; then
+  host="${SMOKE_EXPOSE_HOSTNAME:-}"
+  port="${SMOKE_EXPOSE_PORT:-80}"
+  if [[ -z "$host" ]]; then
+    echo "Smoke: SMOKE_EXPOSE=1 requires SMOKE_EXPOSE_HOSTNAME" >&2
+    exit 1
+  fi
+  echo "== sandbox expose =="
+  run_sandbox expose --id "$SMOKE_ID" --port "$port" --hostname "$host"
+  echo "== sandbox unexpose =="
+  run_sandbox unexpose --id "$SMOKE_ID"
+fi
+
 echo "== sandbox destroy =="
 run_sandbox destroy --id "$SMOKE_ID"
 trap - EXIT
 
-echo "Smoke: OK (create → compose test → destroy)"
+if [[ "${SMOKE_EXPOSE:-0}" == "1" ]]; then
+  echo "Smoke: OK (create → compose test → expose → unexpose → destroy)"
+else
+  echo "Smoke: OK (create → compose test → destroy)"
+fi

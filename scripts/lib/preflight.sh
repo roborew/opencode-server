@@ -7,6 +7,8 @@ SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_LIB_DIR}/opencode-api.sh"
 # shellcheck source=sandbox-enable.sh
 source "${SCRIPT_LIB_DIR}/sandbox-enable.sh"
+# shellcheck source=repo-env.sh
+source "${SCRIPT_LIB_DIR}/repo-env.sh"
 
 PREFLIGHT_JSON_MODE="${PREFLIGHT_JSON_MODE:-0}"
 PREFLIGHT_INTERACTIVE_AUTH="${PREFLIGHT_INTERACTIVE_AUTH:-1}"
@@ -27,6 +29,7 @@ run_preflight() {
   check_opencode_health
   check_workspace_mount
   check_worktree_mount
+  check_repo_envs
   check_opencode_data_volume
   check_milvus
   check_gh_auth
@@ -144,6 +147,38 @@ check_sandbox() {
   else
     preflight_record warn "sandbox mode=${mode} enabled=${enabled}"
   fi
+}
+
+check_repo_envs() {
+  load_env 2>/dev/null || true
+  if [[ -z "${WORKSPACE_ROOT:-}" || ! -d "${WORKSPACE_ROOT}" ]]; then
+    return
+  fi
+  local missing=0 incomplete=0 ok=0 scanned=0
+  local root status
+  while IFS= read -r root; do
+    [[ -n "$root" ]] || continue
+    scanned=$((scanned + 1))
+    (( scanned > 40 )) && break
+    status="$(classify_repo_env "$root")"
+    case "$status" in
+      ok) ok=$((ok + 1)) ;;
+      missing) missing=$((missing + 1)) ;;
+      missing_infisical) incomplete=$((incomplete + 1)) ;;
+    esac
+  done < <(find "$WORKSPACE_ROOT" -maxdepth 3 -name .git -type d -prune 2>/dev/null | while read -r g; do dirname "$g"; done)
+
+  if [[ "$scanned" -eq 0 ]]; then
+    preflight_record warn "no git repos under ${WORKSPACE_ROOT} to check for .env"
+    return
+  fi
+  if [[ "$missing" -eq 0 && "$incomplete" -eq 0 ]]; then
+    preflight_record ok "repo .env: ${ok}/${scanned} ready for Infisical/sandbox builds"
+    return
+  fi
+  preflight_record warn \
+    "repo .env: ok=${ok} missing=${missing} infisical_incomplete=${incomplete} (of ${scanned})" \
+    "./scripts/setup.sh projects local  # create .env + paste Infisical vars (no .env.example)"
 }
 
 check_container() {

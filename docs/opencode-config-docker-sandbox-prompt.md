@@ -1,83 +1,50 @@
-# Agent prompt: add `docker-sandbox` skill to OpenCode config
+# Agent prompt: align `docker-sandbox` with opencode-server Phase 2
 
-Copy-paste the block below into a session against `roborew/opencode` / `~/.config/opencode`.
+Use when updating `roborew/opencode` / `~/.config/opencode`. Server contract: live `sandbox` CLI including `expose`/`unexpose`.
 
-Do **not** change Mac/host behavior when sandbox is unavailable. Server-side contract is implemented in this `opencode-server` repo (`sandbox` CLI, `OPENCODE_SANDBOX_*`).
+**Do not add** a separate Traefik skill or “configure Cloudflare Tunnel” skill. Host Traefik + one apt `cloudflared` are prerequisites. Agents only call `sandbox expose` (Traefik labels) and optionally `cloudflare-api` DNS for `{slug}.{apex}`.
 
 ```text
 You are editing the OpenCode config repo (roborew/opencode / ~/.config/opencode).
 
 ## Goal
-Add an optional **docker-sandbox** skill and wire it so execution agents can build/test target repos inside ephemeral Sysbox sibling sandboxes managed by the utilities **opencode-server** stack — only when that stack exposes sandbox capability. When unavailable (typical Mac / OPENCODE_SANDBOX_MODE=off), behavior must match today: no hard failures, no invented docker.sock usage.
+Keep skill **docker-sandbox** aligned with opencode-server Phase 2:
+1) Sysbox sibling compose build/test via `sandbox` CLI
+2) Optional web review: `sandbox expose` (Traefik) + optional Cloudflare **DNS only**
+   for https://{feature-slug}.{app-apex-domain}
 
-## Non-goals
-- Do not implement Traefik, Cloudflare Tunnel create, or review-app DNS (Phase 2).
-- Do not teach architects/orchestrate to run sandbox mutations (architect plans only; orchestrate Tasks others).
-- Do not write tunnel tokens or secrets into denied paths (`.env*`, `*.pem`, `*.key`).
-- Do not require Sysbox or Docker-in-Docker inside the OpenCode config itself.
+When OPENCODE_SANDBOX_ENABLED=0 / probe unavailable: soft-skip; no invented docker.sock.
 
-## Host contract (opencode-server provides this)
-CLI on PATH inside the OpenCode server container when enabled:
-  sandbox probe|create|exec|status|destroy
-  (expose|unexpose are stubs — say “not implemented yet”)
+## Do NOT create
+- A Traefik install/configure skill
+- A Cloudflare Tunnel create skill
+- Any agent path that runs cloudflared or edits Traefik static config
 
-Env:
-  OPENCODE_SANDBOX_ENABLED=0|1   # computed by server setup
-  OPENCODE_SANDBOX_MODE=off|auto|on
+## Division of responsibility (required in docker-sandbox SKILL.md)
+| Concern | Owner | Agent |
+| Host Traefik + cloudflared | Human / opencode-server README | Never |
+| Traefik route for sandbox | sandbox expose/unexpose | Call CLI only |
+| CF tunnel | Never | Forbidden |
+| DNS {slug}.{apex} | cloudflare-api MCP (+ cloudflare skill for DNS semantics) | Upsert/delete CNAME → existing tunnel target when OPENCODE_SANDBOX_REVIEW_DNS=on |
+| App .env / Infisical | setup create+paste + worktree-env | Gate only; no .env.example |
 
-Probe semantics:
-  - exit 0 + JSON `{ "available": true, ... }` when Sysbox siblings can be created
-  - non-zero or `{ "available": false, "reason": "SANDBOX_UNAVAILABLE" }` otherwise
+## Product workflow
+1. probe → env gate (.env + Infisical key names) → create → exec compose
+2. Optional expose: sandbox expose --hostname {slug}.{apex} --port N
+3. Optional DNS via MCP (same tunnel target as other hosts on the zone)
+4. Teardown: delete session DNS if created → unexpose → destroy
 
-Create/exec/destroy:
-  sandbox create --id <slug> --worktree <abs-path>
-  sandbox exec --id <slug> -- <command...>
-  sandbox destroy --id <slug>
-
-Labels/names are owned by the server CLI (`opencode-sandbox-<slug>`). Agents must not `docker run --runtime=sysbox-runc` ad hoc on the host socket except via this CLI.
-
-## Deliverables in this config repo
-
-1. **skills/docker-sandbox/SKILL.md**
-   - Frontmatter: name `docker-sandbox`, description covering Sysbox sibling sandboxes, compose build/test, when to load.
-   - Hard rules:
-     - Always `sandbox probe` first; if unavailable → report `sandbox: unavailable` and continue with existing non-Docker preflight/test path (or Blocked only if the stage’s test_commands explicitly require compose/Docker).
-     - Prefer repo-documented compose test entrypoints: `docker-compose.test.yml`, `compose.test.yaml`, README “test” compose — do not invent a stack.
-     - Always destroy sandboxes you create (finally / on failure).
-     - Never mount host docker.sock into nested app compose.
-     - Never use sandbox for GPU/CUDA workloads; document unsupported.
-     - Phase 2: mention `expose`/`unexpose` as reserved; do not call as required.
-   - Happy path recipe: probe → create → exec compose build/test → destroy; include example commands.
-   - ID hygiene: slug from branch/feature short name; one sandbox per worktree session unless status shows existing ready id.
-
-2. **Extend skills/preflight/SKILL.md**
-   - After runtime checks, if `sandbox` CLI exists: run `sandbox probe`, record `sandbox: ready|unavailable` in structured output.
-   - `unavailable` is NOT a Blocked status by itself.
-
-3. **Agent permission.skill allows**
-   Add `"docker-sandbox": "allow"` (same style as cloudflare) on:
-   - agents/developer.md
-   - agents/frontend-dev.md
-   - agents/verifier.md
-   - agents/preflight.md (if it uses permission.skill; otherwise ensure Task load can request the skill)
-   Do NOT add to architect or orchestrate as an execution path.
-
-4. **Docs**
-   - docs/architecture/opencode-capability-matrix.md — new row: Docker compose build/test via docker-sandbox / sandbox CLI; gate = OPENCODE_SANDBOX_ENABLED.
-   - docs/RUNBOOK.md — short “Ubuntu Sysbox sandboxes” note: optional server feature; Mac off; stage test_commands may wrap `sandbox exec …`.
-   - CONTEXT.md — one glossary line for Sandbox (Sysbox sibling) if you keep domain terms there.
-
-5. **Testing guidance**
-   - rules/testing.md or skill text: when sandbox ready and repo has compose tests, verifier may accept evidence from `sandbox exec` logs the same as local test runners.
+## Deliverables
+1. skills/docker-sandbox/SKILL.md — division table, env gate, expose + DNS recipe, teardown
+2. skills/preflight/SKILL.md — soft sandbox probe; expose not_ready if Traefik env missing
+3. permission.skill docker-sandbox on developer, frontend-dev, verifier, preflight
+4. CONTEXT / RUNBOOK / capability matrix — Sandbox, Review hostname, App vs server Infisical
+5. Note in RUNBOOK: review-app DNS is docker-sandbox + cloudflare-api, not a tunnel skill
 
 ## Acceptance
-- Config validates with existing validate-config scripts if present.
-- Grep shows docker-sandbox skill + four agent allow sites (or preflight equivalent).
-- No change forces Docker/Sysbox on hosts where OPENCODE_SANDBOX_ENABLED=0.
-- No Traefik/CF tunnel automation skill in this change set.
-
-## Implementation style
-Match existing skill tone (preflight, wrangler): concise hard rules, command examples, no marketing fluff. Prefer editing only the files listed above.
+- Skill states: no Traefik skill; no tunnel create; expose = CLI; DNS = MCP optional
+- Agents allowed; validate-config if present
+- No forced Sysbox when ENABLED=0
 ```
 
-After the config PR lands: rebuild the OpenCode server image (`CONFIG_REF` → new commit) so the container picks up the skill.
+After config merge: rebuild OpenCode server image (`CONFIG_REF`).

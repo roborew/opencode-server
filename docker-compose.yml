@@ -58,6 +58,11 @@ services:
       OPENCODE_SANDBOX_IMAGE: ${OPENCODE_SANDBOX_IMAGE:-opencode-sandbox:local}
       OPENCODE_SANDBOX_RUNTIME: ${OPENCODE_SANDBOX_RUNTIME:-sysbox-runc}
       OPENCODE_SANDBOX_STATE_DIR: /var/opencode-xdg/sandboxes
+      OPENCODE_SANDBOX_TRAEFIK_NETWORK: ${OPENCODE_SANDBOX_TRAEFIK_NETWORK:-traefik}
+      OPENCODE_SANDBOX_TRAEFIK_ENTRYPOINT: ${OPENCODE_SANDBOX_TRAEFIK_ENTRYPOINT:-websecure}
+      OPENCODE_SANDBOX_TRAEFIK_CERTRESOLVER: ${OPENCODE_SANDBOX_TRAEFIK_CERTRESOLVER:-}
+      OPENCODE_SANDBOX_REVIEW_DNS: ${OPENCODE_SANDBOX_REVIEW_DNS:-on}
+      OPENCODE_SANDBOX_ROUTE_IMAGE: ${OPENCODE_SANDBOX_ROUTE_IMAGE:-alpine/socat:1.8.0.0}
     volumes:
       # Server state (DB/sessions/MCP auth) — named volume only; wipe with
       # ./scripts/wipe-opencode-data.sh or `docker compose down -v`.
