@@ -11,14 +11,17 @@ source "${SCRIPT_DIR}/lib/preflight.sh"
 source "${SCRIPT_DIR}/lib/select.sh"
 # shellcheck source=lib/client-bootstrap.sh
 source "${SCRIPT_DIR}/lib/client-bootstrap.sh"
+# shellcheck source=lib/sandbox-enable.sh
+source "${SCRIPT_DIR}/lib/sandbox-enable.sh"
 
 usage() {
   cat <<'EOF'
 Usage: ./scripts/setup.sh [command] [options]
 
 Commands:
-  (default)           Preflight, then amend project set + client bootstrap
-  preflight           Run preflight checks only
+  (default)           Configure sandbox mode, preflight, then amend projects + bootstrap
+  preflight           Run preflight checks only (includes sandbox configure)
+  sandbox             Probe/configure Sysbox sandbox mode only (OPENCODE_SANDBOX_MODE)
   projects local      Amend local OPENCODE_APPS_DIR set; ensure work branch checkout
   projects github     List GH_ORG repos, clone chosen ones onto work branch, amend set
   bootstrap           Hosts entry + print open links
@@ -50,6 +53,7 @@ Wipe Docker server DB/auth only (keeps Desktop + repos + host worktrees):
 
 Examples:
   ./scripts/setup.sh
+  ./scripts/setup.sh sandbox
   ./scripts/setup.sh projects local
   ./scripts/setup.sh projects local --all --yes
   ./scripts/setup.sh bootstrap --yes
@@ -70,6 +74,7 @@ parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       preflight) COMMAND="preflight"; shift ;;
+      sandbox) COMMAND="sandbox"; shift ;;
       bootstrap) COMMAND="bootstrap"; shift ;;
       projects)
         COMMAND="projects"
@@ -447,7 +452,12 @@ main() {
   cd "$REPO_ROOT"
 
   case "${COMMAND:-}" in
+    sandbox)
+      configure_sandbox_mode
+      exit $?
+      ;;
     preflight)
+      configure_sandbox_mode || [[ "$FORCE" == "1" ]] || exit 1
       run_preflight
       exit $?
       ;;
@@ -461,6 +471,7 @@ main() {
         exit 1
       fi
       if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
+        configure_sandbox_mode || [[ "$FORCE" == "1" ]] || exit 1
         run_preflight || [[ "$FORCE" == "1" ]] || exit 1
       fi
       if [[ "$PROJECT_MODE" == "local" ]]; then
@@ -471,6 +482,7 @@ main() {
       ;;
     "")
       if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
+        configure_sandbox_mode || [[ "$FORCE" == "1" ]] || exit 1
         run_preflight || [[ "$FORCE" == "1" ]] || exit 1
       fi
       prompt_project_mode

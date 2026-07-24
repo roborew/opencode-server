@@ -83,6 +83,19 @@ RUN npm install -g @zilliz/claude-context-mcp@latest
 RUN curl -fsSL https://cli.coderabbit.ai/install.sh | bash; \
     test -x /root/.local/bin/coderabbit
 
+# Docker CLI only (no dockerd). Used when docker-compose.sandbox.yml mounts the
+# host socket so agents can create Sysbox sibling sandboxes. Without the socket
+# mount (Mac / OPENCODE_SANDBOX_MODE=off), `sandbox probe` reports unavailable.
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" \
+      > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
 # OpenCode CLI
 RUN curl -fsSL https://opencode.ai/install | bash
 
@@ -99,10 +112,12 @@ COPY docker/merge-config.py /usr/local/bin/merge-config.py
 COPY docker/rewrite-worktree-gitdirs.py /usr/local/bin/rewrite-worktree-gitdirs.py
 COPY docker/worktree-delete-guard.py /usr/local/bin/worktree-delete-guard.py
 COPY docker/opencode-serve-guarded.sh /usr/local/bin/opencode-serve-guarded.sh
+COPY scripts/sandbox/sandbox /usr/local/bin/sandbox
 RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/configure-git-identity.sh \
     /usr/local/bin/merge-config.py \
     /usr/local/bin/rewrite-worktree-gitdirs.py /usr/local/bin/worktree-delete-guard.py \
-    /usr/local/bin/opencode-serve-guarded.sh
+    /usr/local/bin/opencode-serve-guarded.sh \
+    /usr/local/bin/sandbox
 
 EXPOSE 4097 19876
 

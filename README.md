@@ -451,6 +451,107 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 
 **Requirements:** The service must be reachable from the container via the Docker host gateway. Docker Desktop on Mac can usually reach host ports bound to `127.0.0.1`. On Linux, bind the service to `0.0.0.0` or publish the port if `host.docker.internal` cannot reach it.
 
+## Optional Sysbox sibling sandboxes (Ubuntu)
+
+**Mac / default:** leave `OPENCODE_SANDBOX_MODE=off` (the `.env.example` default). The stack is unchanged — no `docker.sock` mount, no Sysbox. Agents cannot run nested Compose; that is expected.
+
+**Ubuntu:** install Sysbox, set `OPENCODE_SANDBOX_MODE=auto` (or `on`), run setup, build the sandbox image, restart compose with the sandbox overlay. Agents then use the `sandbox` CLI to create ephemeral Sysbox siblings that run each repo’s own Docker Compose build/test stack.
+
+### Mode flag
+
+| `OPENCODE_SANDBOX_MODE` | Behavior |
+| ----------------------- | -------- |
+| `off` (default) | Current Mac-safe stack. No socket, no sibling sandboxes. |
+| `auto` | Setup probes for `sysbox-runc`. If present → enable; else warn and stay off. |
+| `on` | Require Sysbox; setup fails if the probe fails. |
+
+Setup writes `OPENCODE_SANDBOX_ENABLED=0|1` and, when enabling, sets:
+
+```bash
+COMPOSE_FILE=docker-compose.yml:docker-compose.sandbox.yml
+```
+
+That overlay mounts `/var/run/docker.sock` into OpenCode **only** so the `sandbox` CLI can create/exec/destroy **sibling** containers with `--runtime=sysbox-runc`. Nested app Compose runs inside the sibling’s own Docker daemon — never pass the host socket into app stacks.
+
+### Install Sysbox on the Ubuntu host
+
+Package-based install for a standalone Docker host (not the Kubernetes DaemonSet route). See [Sysbox install-package](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-package.md) and [distro-compat](https://github.com/nestybox/sysbox/blob/master/docs/distro-compat.md).
+
+**Pre-checks** (prefer kernel 5.12+; well-tested 5.15–6.5 LTS):
+
+```bash
+uname -r
+lsb_release -a
+```
+
+**Install** (restarts Docker — drain workloads first):
+
+```bash
+# Disruptive: schedule a maintenance window
+docker rm $(docker ps -a -q) -f
+
+sudo apt-get install jq wget -y
+# Verify current Sysbox CE version on Nestybox downloads before pinning;
+# 0.6.7 is a known-good starting point from our Ubuntu host notes.
+wget https://downloads.nestybox.com/sysbox/releases/v0.6.7/sysbox-ce_0.6.7-0.linux_amd64.deb
+sudo apt-get install ./sysbox-ce_0.6.7-0.linux_amd64.deb
+
+sudo systemctl status sysbox -n20
+cat /etc/docker/daemon.json   # should list sysbox-runc alongside runc
+```
+
+**Smoke Sysbox:**
+
+```bash
+docker run --runtime=sysbox-runc --rm -it --hostname=sbox-test alpine sh
+```
+
+**Caveats**
+
+- **GPU / NVIDIA:** Sysbox has no official GPU passthrough like `nvidia-container-toolkit` ([nestybox/sysbox#50](https://github.com/nestybox/sysbox/issues/50)). Do not assume CUDA inside sandboxes.
+- **Docker + Kubernetes on the same box:** Sysbox sits beside `runc` after install; the disruptive moment is the Docker daemon restart during `.deb` install.
+
+### Enable in this stack
+
+```bash
+# .env
+OPENCODE_SANDBOX_MODE=auto   # or on
+
+./scripts/setup.sh sandbox
+# or: ./scripts/setup.sh preflight
+
+docker compose build opencode
+./scripts/sandbox/build-image.sh
+docker compose up -d
+
+# Smoke (create → nested compose test → destroy)
+./scripts/sandbox/smoke-test.sh
+```
+
+### Agent CLI contract
+
+Inside the OpenCode container (when enabled):
+
+```bash
+sandbox probe
+sandbox create --id feat-slug --worktree /absolute/path/to/repo
+sandbox exec --id feat-slug -- docker compose -f docker-compose.test.yml run --rm test
+sandbox status --id feat-slug
+sandbox destroy --id feat-slug
+# expose / unexpose — Phase 2 stubs (Traefik + Cloudflare Tunnel); not implemented yet
+```
+
+Exit code `2` / JSON `"reason":"SANDBOX_UNAVAILABLE"` means sandboxes are off — treat as a soft skip unless the stage explicitly requires Compose.
+
+OpenCode config skill wiring (agents/skills in `roborew/opencode`) is a separate change — use the copy-paste prompt in [`docs/opencode-config-docker-sandbox-prompt.md`](docs/opencode-config-docker-sandbox-prompt.md).
+
+### Phase 1 / Phase 2
+
+| Phase 1 (this release) | Phase 2 (hooks only) |
+| ---------------------- | -------------------- |
+| Build/test via sibling nested Docker | Traefik labels + persistent Cloudflare Tunnel + dynamic review hostnames |
+| `expose`/`unexpose` stubbed | Wire DNS + Tunnel Edit OAuth scopes |
+
 ## Troubleshooting
 
 | Issue                                      | Check                                                                                                                                           |
@@ -474,6 +575,10 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 | Sessions missing after compose change      | Ensure `opencode-data` is still the named volume at `/var/lib/opencode-data` — never replace it with a host bind or use `docker compose down -v` |
 | Local Git / Tower worktree disconnected    | Recreate the workspace after same-path upgrade; confirm gitdir/.git use `$OPENCODE_APPS_DIR` and `$OPENCODE_WORKTREES_DIR` only                 |
 | Old workspace won't open                   | Re-run `projects local` and recreate that workspace on `$OPENCODE_APPS_DIR` paths                                                              |
+| Sandbox probe unavailable on Mac           | Expected — leave `OPENCODE_SANDBOX_MODE=off`. Sysbox siblings are Ubuntu-only.                                                                 |
+| Sandbox mode=on but setup fails            | Install Sysbox CE; confirm `sysbox-runc` in `docker info` runtimes; re-run `./scripts/setup.sh sandbox`                                      |
+| Sandbox enabled but no sock in container   | Ensure `COMPOSE_FILE` includes `docker-compose.sandbox.yml`, then `docker compose up -d`                                                      |
+| Sandbox image missing                      | `./scripts/sandbox/build-image.sh` (tags `OPENCODE_SANDBOX_IMAGE`, default `opencode-sandbox:local`)                                           |
 
 ## Files
 
@@ -481,15 +586,26 @@ Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and D
 .
 ├── Dockerfile
 ├── docker-compose.yml
+├── docker-compose.sandbox.yml   # Optional overlay (socket + ENABLED=1); Mac never loads by default
 ├── scripts/
-│   ├── setup.sh                 # Post-compose: preflight + project sync + hosts
+│   ├── setup.sh                 # Post-compose: sandbox configure + preflight + project sync + hosts
 │   ├── doctor-perf.sh           # Host MCP leak / docker stats / Desktop app-data snapshot
-│   └── lib/                     # opencode-api, preflight, select, client-bootstrap helpers
-├── docker/entrypoint.sh       # Infisical wrapper + merge-config + container defaults
-├── docker/merge-config.py     # Deep-merge overrides into cloned opencode.json
-├── docker/plugins/            # OpenCode plugins (localhost → host.docker.internal)
+│   ├── sandbox/
+│   │   ├── sandbox              # CLI: probe|create|exec|status|destroy (+ expose stubs)
+│   │   ├── build-image.sh
+│   │   └── smoke-test.sh
+│   └── lib/                     # opencode-api, preflight, sandbox-enable, select, client-bootstrap
+├── docker/
+│   ├── entrypoint.sh
+│   ├── sandbox/
+│   │   ├── Dockerfile           # Sysbox sibling image (nested Docker)
+│   │   └── fixtures/compose-smoke/
+│   ├── merge-config.py
+│   └── plugins/
+├── docs/
+│   └── opencode-config-docker-sandbox-prompt.md
 ├── overrides/
-│   ├── README.md              # Host vs server claude-context (indexing) control
-│   └── opencode.server.json   # MCP/workspace overrides merged at container start
+│   ├── README.md
+│   └── opencode.server.json
 ├── .env.example
 ```

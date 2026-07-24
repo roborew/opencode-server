@@ -50,6 +50,14 @@ services:
       # land in the same store as `opencode serve` (volume via /var/opencode-xdg).
       XDG_DATA_HOME: /var/opencode-xdg
       OPENCODE_CONTAINER_XDG: /var/opencode-xdg
+      # Sysbox sibling sandboxes (optional). Default off — Mac-identical.
+      # When enabled, setup sets OPENCODE_SANDBOX_ENABLED=1 and merges
+      # docker-compose.sandbox.yml (host docker.sock). See README.
+      OPENCODE_SANDBOX_MODE: ${OPENCODE_SANDBOX_MODE:-off}
+      OPENCODE_SANDBOX_ENABLED: ${OPENCODE_SANDBOX_ENABLED:-0}
+      OPENCODE_SANDBOX_IMAGE: ${OPENCODE_SANDBOX_IMAGE:-opencode-sandbox:local}
+      OPENCODE_SANDBOX_RUNTIME: ${OPENCODE_SANDBOX_RUNTIME:-sysbox-runc}
+      OPENCODE_SANDBOX_STATE_DIR: /var/opencode-xdg/sandboxes
     volumes:
       # Server state (DB/sessions/MCP auth) — named volume only; wipe with
       # ./scripts/wipe-opencode-data.sh or `docker compose down -v`.

@@ -1,0 +1,18 @@
+# Optional overlay: Sysbox sibling sandbox control plane.
+# Applied only when setup sets:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.sandbox.yml
+#   OPENCODE_SANDBOX_ENABLED=1
+#
+# Default Mac / OPENCODE_SANDBOX_MODE=off path never loads this file.
+services:
+  opencode:
+    environment:
+      OPENCODE_SANDBOX_ENABLED: "1"
+      OPENCODE_SANDBOX_MODE: ${OPENCODE_SANDBOX_MODE:-auto}
+      OPENCODE_SANDBOX_IMAGE: ${OPENCODE_SANDBOX_IMAGE:-opencode-sandbox:local}
+      OPENCODE_SANDBOX_RUNTIME: ${OPENCODE_SANDBOX_RUNTIME:-sysbox-runc}
+      OPENCODE_SANDBOX_STATE_DIR: /var/opencode-xdg/sandboxes
+    volumes:
+      # Control plane only: create/exec/destroy Sysbox siblings on the host daemon.
+      # Nested app stacks use the sibling's own dockerd — never pass this sock inward.
+      - /var/run/docker.sock:/var/run/docker.sock

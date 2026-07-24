@@ -85,6 +85,9 @@ setup_container_data_layout() {
 
   link_volume_into_opencode_dir "$CONTAINER_DATA"
 
+  # Sibling sandbox state (JSON) when OPENCODE_SANDBOX_ENABLED=1
+  mkdir -p "${CONTAINER_XDG}/sandboxes"
+
   echo "opencode-entrypoint: XDG_DATA_HOME=${XDG_DATA_HOME}" >&2
   echo "opencode-entrypoint: worktrees=${CONTAINER_WT} host=${host_wt:-none} volume=${VOLUME_DATA}" >&2
 }

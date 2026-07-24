@@ -1,0 +1,399 @@
+#!/usr/bin/env bash
+# sandbox — Sysbox sibling lifecycle for OpenCode (Phase 1 build/test).
+# Phase 2: expose/unexpose are stubs that preserve the hook surface.
+set -euo pipefail
+
+VERSION="1.0.0"
+STATE_DIR="${OPENCODE_SANDBOX_STATE_DIR:-${XDG_DATA_HOME:-/var/opencode-xdg}/sandboxes}"
+IMAGE="${OPENCODE_SANDBOX_IMAGE:-opencode-sandbox:local}"
+RUNTIME="${OPENCODE_SANDBOX_RUNTIME:-sysbox-runc}"
+NAME_PREFIX="opencode-sandbox"
+READY_TIMEOUT_SEC="${OPENCODE_SANDBOX_READY_TIMEOUT:-120}"
+
+usage() {
+  cat <<'EOF'
+Usage: sandbox <command> [options]
+
+Commands:
+  probe                         Check if Sysbox siblings are available (JSON)
+  create --id <slug> --worktree <abs-path> [--network <name>] ...
+  exec   --id <slug> -- <command...>
+  status --id <slug>            JSON status for one sandbox (or --all)
+  destroy --id <slug>           Stop/remove sibling + clear state
+  expose / unexpose             Phase 2 stubs (not implemented)
+  version                       Print CLI version
+  help                          Show this help
+
+Env:
+  OPENCODE_SANDBOX_ENABLED=0|1  Must be 1 for create/exec (probe reports available)
+  OPENCODE_SANDBOX_IMAGE        Sibling image (default opencode-sandbox:local)
+  OPENCODE_SANDBOX_RUNTIME      Docker runtime (default sysbox-runc)
+  OPENCODE_SANDBOX_STATE_DIR    State JSON dir
+
+Exit codes:
+  0  success / available
+  1  general error
+  2  SANDBOX_UNAVAILABLE (mode off, no socket, or no sysbox-runc)
+EOF
+}
+
+json_escape() {
+  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+emit_unavailable() {
+  local reason="${1:-SANDBOX_UNAVAILABLE}"
+  local detail="${2:-}"
+  printf '{"available":false,"reason":%s,"detail":%s}\n' \
+    "$(json_escape "$reason")" \
+    "$(json_escape "$detail")"
+}
+
+container_name() {
+  local id="$1"
+  echo "${NAME_PREFIX}-${id}"
+}
+
+state_path() {
+  local id="$1"
+  echo "${STATE_DIR}/${id}.json"
+}
+
+require_docker() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "sandbox: docker CLI not found" >&2
+    return 1
+  fi
+  if [[ ! -S /var/run/docker.sock ]] && [[ -z "${DOCKER_HOST:-}" ]]; then
+    echo "sandbox: docker.sock not mounted (OPENCODE_SANDBOX_MODE off or overlay not applied)" >&2
+    return 2
+  fi
+  if ! docker info >/dev/null 2>&1; then
+    echo "sandbox: cannot talk to Docker daemon" >&2
+    return 2
+  fi
+  return 0
+}
+
+has_sysbox_runtime() {
+  local runtimes
+  runtimes="$(docker info --format '{{range $k, $v := .Runtimes}}{{$k}} {{end}}' 2>/dev/null || true)"
+  [[ "$runtimes" == *"sysbox-runc"* ]]
+}
+
+cmd_probe() {
+  local enabled="${OPENCODE_SANDBOX_ENABLED:-0}"
+  if [[ "$enabled" != "1" ]]; then
+    emit_unavailable "SANDBOX_UNAVAILABLE" "OPENCODE_SANDBOX_ENABLED=${enabled} (set OPENCODE_SANDBOX_MODE=auto|on on Ubuntu host)"
+    return 2
+  fi
+  if ! require_docker; then
+    emit_unavailable "SANDBOX_UNAVAILABLE" "docker socket/daemon not available to OpenCode container"
+    return 2
+  fi
+  if ! has_sysbox_runtime; then
+    emit_unavailable "SANDBOX_UNAVAILABLE" "sysbox-runc not in Docker runtimes"
+    return 2
+  fi
+  if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    printf '{"available":true,"ready":false,"warning":%s,"image":%s,"runtime":%s}\n' \
+      "$(json_escape "sandbox image missing — build with scripts/sandbox/build-image.sh")" \
+      "$(json_escape "$IMAGE")" \
+      "$(json_escape "$RUNTIME")"
+    return 0
+  fi
+  printf '{"available":true,"ready":true,"image":%s,"runtime":%s,"state_dir":%s}\n' \
+    "$(json_escape "$IMAGE")" \
+    "$(json_escape "$RUNTIME")" \
+    "$(json_escape "$STATE_DIR")"
+  return 0
+}
+
+write_state() {
+  local id="$1"
+  local status="$2"
+  local worktree="$3"
+  local name
+  name="$(container_name "$id")"
+  mkdir -p "$STATE_DIR"
+  cat >"$(state_path "$id")" <<EOF
+{
+  "id": $(json_escape "$id"),
+  "name": $(json_escape "$name"),
+  "status": $(json_escape "$status"),
+  "worktree": $(json_escape "$worktree"),
+  "image": $(json_escape "$IMAGE"),
+  "runtime": $(json_escape "$RUNTIME"),
+  "updated_at": $(json_escape "$(date -u +%Y-%m-%dT%H:%M:%SZ)"),
+  "expose": null
+}
+EOF
+}
+
+wait_nested_docker() {
+  local name="$1"
+  local i=0
+  while (( i < READY_TIMEOUT_SEC )); do
+    if docker exec "$name" docker info >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  echo "sandbox: timed out waiting for nested dockerd in ${name}" >&2
+  return 1
+}
+
+parse_create_args() {
+  CREATE_ID=""
+  CREATE_WORKTREE=""
+  CREATE_NETWORK=""
+  CREATE_EXTRA=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id) CREATE_ID="$2"; shift 2 ;;
+      --worktree) CREATE_WORKTREE="$2"; shift 2 ;;
+      --network) CREATE_NETWORK="$2"; shift 2 ;;
+      --)
+        shift
+        CREATE_EXTRA+=("$@")
+        break
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *)
+        echo "sandbox create: unknown arg: $1" >&2
+        return 1
+        ;;
+    esac
+  done
+  if [[ -z "$CREATE_ID" || -z "$CREATE_WORKTREE" ]]; then
+    echo "sandbox create: --id and --worktree are required" >&2
+    return 1
+  fi
+  if [[ ! "$CREATE_ID" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "sandbox create: invalid --id (use alphanumeric, ., _, -)" >&2
+    return 1
+  fi
+  if [[ "$CREATE_WORKTREE" != /* ]]; then
+    echo "sandbox create: --worktree must be an absolute path" >&2
+    return 1
+  fi
+}
+
+cmd_create() {
+  parse_create_args "$@"
+  if [[ "${OPENCODE_SANDBOX_ENABLED:-0}" != "1" ]]; then
+    emit_unavailable "SANDBOX_UNAVAILABLE" "OPENCODE_SANDBOX_ENABLED!=1" >&2
+    return 2
+  fi
+  require_docker || return $?
+  if ! has_sysbox_runtime; then
+    emit_unavailable "SANDBOX_UNAVAILABLE" "sysbox-runc missing" >&2
+    return 2
+  fi
+  if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "sandbox: image ${IMAGE} not found. Run: scripts/sandbox/build-image.sh" >&2
+    return 1
+  fi
+  if [[ ! -d "$CREATE_WORKTREE" ]]; then
+    echo "sandbox: worktree does not exist: ${CREATE_WORKTREE}" >&2
+    return 1
+  fi
+
+  local name
+  name="$(container_name "$CREATE_ID")"
+  if docker inspect "$name" >/dev/null 2>&1; then
+    echo "sandbox: container ${name} already exists — use status/destroy or reuse with exec" >&2
+    write_state "$CREATE_ID" "ready" "$CREATE_WORKTREE"
+    printf '{"id":%s,"name":%s,"status":"exists","worktree":%s}\n' \
+      "$(json_escape "$CREATE_ID")" "$(json_escape "$name")" "$(json_escape "$CREATE_WORKTREE")"
+    return 0
+  fi
+
+  write_state "$CREATE_ID" "creating" "$CREATE_WORKTREE"
+
+  local -a run_args=(
+    run -d
+    --runtime="$RUNTIME"
+    --name "$name"
+    --hostname "$name"
+    --label "opencode.sandbox=true"
+    --label "opencode.sandbox.id=${CREATE_ID}"
+    --label "opencode.sandbox.worktree=${CREATE_WORKTREE}"
+    # Reserved Traefik keys (Phase 2) — unused until expose is implemented.
+    --label "opencode.sandbox.traefik.enable=false"
+    -v "${CREATE_WORKTREE}:${CREATE_WORKTREE}:rw"
+    -w "$CREATE_WORKTREE"
+    -e "COMPOSE_PROJECT_NAME=opencode-sb-${CREATE_ID}"
+  )
+
+  if [[ -n "$CREATE_NETWORK" ]]; then
+    run_args+=(--network "$CREATE_NETWORK")
+  fi
+
+  # systemd + dockerd entrypoint for Nestybox-style images
+  run_args+=("$IMAGE" /sbin/init)
+
+  if ! docker "${run_args[@]}"; then
+    write_state "$CREATE_ID" "failed" "$CREATE_WORKTREE"
+    echo "sandbox: docker run failed" >&2
+    return 1
+  fi
+
+  if ! wait_nested_docker "$name"; then
+    docker rm -f "$name" >/dev/null 2>&1 || true
+    write_state "$CREATE_ID" "failed" "$CREATE_WORKTREE"
+    return 1
+  fi
+
+  write_state "$CREATE_ID" "ready" "$CREATE_WORKTREE"
+  printf '{"id":%s,"name":%s,"status":"ready","worktree":%s}\n' \
+    "$(json_escape "$CREATE_ID")" "$(json_escape "$name")" "$(json_escape "$CREATE_WORKTREE")"
+}
+
+cmd_exec() {
+  local id=""
+  local -a cmd=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id) id="$2"; shift 2 ;;
+      --) shift; cmd=("$@"); break ;;
+      *)
+        if [[ -z "$id" && "$1" != -* ]]; then
+          id="$1"; shift
+        else
+          echo "sandbox exec: use --id <slug> -- <command>" >&2
+          return 1
+        fi
+        ;;
+    esac
+  done
+  if [[ -z "$id" || ${#cmd[@]} -eq 0 ]]; then
+    echo "sandbox exec: --id and command after -- are required" >&2
+    return 1
+  fi
+  require_docker || return $?
+  local name
+  name="$(container_name "$id")"
+  if ! docker inspect "$name" >/dev/null 2>&1; then
+    echo "sandbox: no container ${name} — run create first" >&2
+    return 1
+  fi
+  # Prefer worktree cwd from labels
+  local worktree
+  worktree="$(docker inspect -f '{{index .Config.Labels "opencode.sandbox.worktree"}}' "$name" 2>/dev/null || true)"
+  if [[ -n "$worktree" ]]; then
+    docker exec -w "$worktree" "$name" "${cmd[@]}"
+  else
+    docker exec "$name" "${cmd[@]}"
+  fi
+}
+
+cmd_status() {
+  local id=""
+  local all=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id) id="$2"; shift 2 ;;
+      --all) all=1; shift ;;
+      *) id="${1:-}"; shift ;;
+    esac
+  done
+  require_docker || return $?
+  if [[ "$all" == "1" ]]; then
+    docker ps -a --filter "label=opencode.sandbox=true" \
+      --format '{{.Names}}\t{{.Status}}\t{{.Label "opencode.sandbox.id"}}'
+    return 0
+  fi
+  if [[ -z "$id" ]]; then
+    echo "sandbox status: --id <slug> or --all" >&2
+    return 1
+  fi
+  local name state_file
+  name="$(container_name "$id")"
+  state_file="$(state_path "$id")"
+  local running="false" docker_status="missing"
+  if docker inspect "$name" >/dev/null 2>&1; then
+    docker_status="$(docker inspect -f '{{.State.Status}}' "$name")"
+    if [[ "$docker_status" == "running" ]]; then
+      running="true"
+    fi
+  fi
+  local nested="false"
+  if [[ "$running" == "true" ]] && docker exec "$name" docker info >/dev/null 2>&1; then
+    nested="true"
+  fi
+  local file_json="{}"
+  if [[ -f "$state_file" ]]; then
+    file_json="$(cat "$state_file")"
+  fi
+  python3 - "$id" "$name" "$running" "$docker_status" "$nested" "$file_json" <<'PY'
+import json, sys
+sid, name, running, st, nested, file_json = sys.argv[1:7]
+try:
+    base = json.loads(file_json) if file_json.strip() else {}
+except json.JSONDecodeError:
+    base = {}
+base.update({
+    "id": sid,
+    "name": name,
+    "running": running == "true",
+    "container_status": st,
+    "nested_docker_ready": nested == "true",
+})
+print(json.dumps(base))
+PY
+}
+
+cmd_destroy() {
+  local id=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id) id="$2"; shift 2 ;;
+      *) id="${1:-}"; shift ;;
+    esac
+  done
+  if [[ -z "$id" ]]; then
+    echo "sandbox destroy: --id <slug> required" >&2
+    return 1
+  fi
+  require_docker || return $?
+  local name
+  name="$(container_name "$id")"
+  write_state "$id" "destroying" "$(docker inspect -f '{{index .Config.Labels "opencode.sandbox.worktree"}}' "$name" 2>/dev/null || echo "")"
+  # Best-effort: stop nested compose projects inside before rm
+  if docker inspect "$name" >/dev/null 2>&1; then
+    docker exec "$name" sh -c 'docker ps -aq | xargs -r docker rm -f' >/dev/null 2>&1 || true
+    docker rm -f "$name" >/dev/null 2>&1 || true
+  fi
+  rm -f "$(state_path "$id")"
+  printf '{"id":%s,"status":"gone"}\n' "$(json_escape "$id")"
+}
+
+cmd_expose_stub() {
+  echo "sandbox: expose/unexpose not implemented (Phase 2 — Traefik + Cloudflare Tunnel hooks)" >&2
+  printf '{"implemented":false,"phase":2,"message":"not implemented yet"}\n'
+  return 1
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    probe) cmd_probe "$@" ;;
+    create) cmd_create "$@" ;;
+    exec) cmd_exec "$@" ;;
+    status) cmd_status "$@" ;;
+    destroy) cmd_destroy "$@" ;;
+    expose|unexpose) cmd_expose_stub "$@" ;;
+    version|--version) echo "sandbox ${VERSION}" ;;
+    help|-h|--help) usage ;;
+    *)
+      echo "sandbox: unknown command: ${cmd}" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

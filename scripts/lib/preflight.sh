@@ -5,6 +5,8 @@ set -euo pipefail
 SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=opencode-api.sh
 source "${SCRIPT_LIB_DIR}/opencode-api.sh"
+# shellcheck source=sandbox-enable.sh
+source "${SCRIPT_LIB_DIR}/sandbox-enable.sh"
 
 PREFLIGHT_JSON_MODE="${PREFLIGHT_JSON_MODE:-0}"
 PREFLIGHT_INTERACTIVE_AUTH="${PREFLIGHT_INTERACTIVE_AUTH:-1}"
@@ -20,6 +22,7 @@ run_preflight() {
   check_env_file
   check_required_env
   check_optional_env
+  check_sandbox
   check_container
   check_opencode_health
   check_workspace_mount
@@ -78,6 +81,68 @@ check_optional_env() {
     done
   else
     preflight_record ok "Optional env vars present"
+  fi
+}
+
+check_sandbox() {
+  load_env 2>/dev/null || true
+  local mode="${OPENCODE_SANDBOX_MODE:-off}"
+  local enabled="${OPENCODE_SANDBOX_ENABLED:-0}"
+  mode="$(echo "$mode" | tr '[:upper:]' '[:lower:]')"
+
+  case "$mode" in
+    off|"")
+      preflight_record ok "sandbox mode=off (Mac-safe default; no Sysbox siblings)"
+      return
+      ;;
+  esac
+
+  if [[ "$enabled" == "1" ]]; then
+    if host_has_sysbox_runtime; then
+      preflight_record ok "sandbox enabled (Sysbox siblings; COMPOSE_FILE includes sandbox overlay)"
+    else
+      preflight_record warn \
+        "OPENCODE_SANDBOX_ENABLED=1 but sysbox-runc missing on host" \
+        "./scripts/setup.sh sandbox  # or install Sysbox — see README"
+    fi
+    if container_running; then
+      if docker exec "$CONTAINER_NAME" test -S /var/run/docker.sock 2>/dev/null; then
+        preflight_record ok "sandbox: docker.sock mounted in ${CONTAINER_NAME}"
+      else
+        preflight_record warn \
+          "sandbox enabled but docker.sock not in container" \
+          "docker compose up -d  # with COMPOSE_FILE including docker-compose.sandbox.yml"
+      fi
+      if docker exec "$CONTAINER_NAME" command -v sandbox >/dev/null 2>&1; then
+        local probe
+        if probe="$(docker exec -e OPENCODE_SANDBOX_ENABLED=1 "$CONTAINER_NAME" sandbox probe 2>/dev/null)"; then
+          if echo "$probe" | grep -q '"available":true'; then
+            preflight_record ok "sandbox probe available inside container"
+          else
+            preflight_record warn "sandbox probe: ${probe}"
+          fi
+        else
+          preflight_record warn "sandbox probe failed inside container" "check image has /usr/local/bin/sandbox"
+        fi
+      else
+        preflight_record warn \
+          "sandbox CLI missing in container" \
+          "docker compose build opencode && docker compose up -d"
+      fi
+    fi
+    return
+  fi
+
+  if [[ "$mode" == "auto" ]]; then
+    preflight_record warn \
+      "sandbox mode=auto but not enabled (Sysbox not detected or setup not re-run)" \
+      "./scripts/setup.sh sandbox"
+  elif [[ "$mode" == "on" ]]; then
+    preflight_record fail \
+      "sandbox mode=on but OPENCODE_SANDBOX_ENABLED!=1" \
+      "install Sysbox + ./scripts/setup.sh sandbox — see README"
+  else
+    preflight_record warn "sandbox mode=${mode} enabled=${enabled}"
   fi
 }
 
