@@ -483,11 +483,12 @@ That overlay mounts `/var/run/docker.sock` into OpenCode **only** so the `sandbo
 
 Package-based install for a standalone Docker host (not the Kubernetes DaemonSet route). See [Sysbox install-package](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-package.md) and [distro-compat](https://github.com/nestybox/sysbox/blob/master/docs/distro-compat.md).
 
-**Pre-checks** (prefer kernel 5.12+; well-tested 5.15–6.5 LTS):
+**Pre-checks**:
 
 ```bash
-uname -r
+uname -r              # 5.12+; well-tested 5.15–6.5 LTS
 lsb_release -a
+docker --version      # note this — see "time-namespace workaround" below
 ```
 
 **Install** (restarts Docker — drain workloads first):
@@ -497,23 +498,46 @@ lsb_release -a
 docker rm $(docker ps -a -q) -f
 
 sudo apt-get install jq wget -y
-# Verify current Sysbox CE version on Nestybox downloads before pinning;
-# 0.6.7 is a known-good starting point from our Ubuntu host notes.
-wget https://downloads.nestybox.com/sysbox/releases/v0.6.7/sysbox-ce_0.6.7-0.linux_amd64.deb
-sudo apt-get install ./sysbox-ce_0.6.7-0.linux_amd64.deb
+# Verify current Sysbox CE version on Nestybox downloads before pinning.
+# 0.7.0 verified on this host (Ubuntu 24.04 HWE 7.0.0-28, Docker Engine 29.6.2).
+wget https://downloads.nestybox.com/sysbox/releases/v0.7.0/sysbox-ce_0.7.0-0.linux_amd64.deb
+sha256sum sysbox-ce_0.7.0-0.linux_amd64.deb
+# expected: eeff273671467b8fa351ab3d40709759462dc03d9f7b50a1b207b37982ce40a9
+sudo apt-get install ./sysbox-ce_0.7.0-0.linux_amd64.deb
 
-sudo systemctl status sysbox -n20
-cat /etc/docker/daemon.json   # should list sysbox-runc alongside runc
+sudo systemctl status sysbox -n20    # active, sysbox-runc/mgr/fs 0.7.0
+sudo systemctl restart docker        # daemon picks up the sysbox-runc runtime
+docker info --format '{{json .Runtimes}}'   # sysbox-runc present alongside runc
 ```
+
+**Time-namespace workaround (Docker Engine ≥ 29.5.0)**
+
+Docker 29.5.0+ injects a private `time` namespace into every container's OCI spec by default, which sysbox-runc 0.7.0 (and 0.6.x) does not yet handle — the result is:
+
+```
+OCI runtime create failed: namespace {"time" ""} does not exist
+```
+
+Open issue: [nestybox/sysbox#1011](https://github.com/nestybox/sysbox/issues/1011). Disable the feature flag globally so docker stops emitting the namespace:
+
+```bash
+sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.bak
+sudo python3 -c 'import json; p="/etc/docker/daemon.json"; d=json.load(open(p)); d.setdefault("features",{})["time-namespaces"]=False; json.dump(d, open(p,"w"), indent=4)'
+sudo systemctl restart docker
+```
+
+This is a global docker setting, so every container on the host loses Docker's default time-namespace handling (only affects the inner container's view of clocks; clock skew between host and containers remains visible). Restore by removing the `features.time-namespaces` key from `daemon.json` and restarting docker.
 
 **Smoke Sysbox:**
 
 ```bash
-docker run --runtime=sysbox-runc --rm -it --hostname=sbox-test alpine sh
+docker run --runtime=sysbox-runc --rm -it --hostname=sbox-test alpine sh -c 'echo ok; id; uname -a'
+# expect: ok; uid=0(root); kernel string matches the host
 ```
 
 **Caveats**
 
+- **Docker ≥ 29.5.0 + time namespaces:** see the workaround above. Until sysbox ships support, do **not** remove the `features.time-namespaces: false` setting.
 - **GPU / NVIDIA:** Sysbox has no official GPU passthrough like `nvidia-container-toolkit` ([nestybox/sysbox#50](https://github.com/nestybox/sysbox/issues/50)). Do not assume CUDA inside sandboxes.
 - **Docker + Kubernetes on the same box:** Sysbox sits beside `runc` after install; the disruptive moment is the Docker daemon restart during `.deb` install.
 
@@ -634,7 +658,8 @@ OpenCode server Infisical (`infisical run` in the entrypoint) does **not** injec
 | Local Git / Tower worktree disconnected    | Recreate the workspace after same-path upgrade; confirm gitdir/.git use `$OPENCODE_APPS_DIR` and `$OPENCODE_WORKTREES_DIR` only                 |
 | Old workspace won't open                   | Re-run `projects local` and recreate that workspace on `$OPENCODE_APPS_DIR` paths                                                              |
 | Sandbox probe unavailable on Mac           | Expected — leave `OPENCODE_SANDBOX_MODE=off`. Sysbox siblings are Ubuntu-only.                                                                 |
-| Sandbox mode=on but setup fails            | Install Sysbox CE; confirm `sysbox-runc` in `docker info` runtimes; re-run `./scripts/setup.sh sandbox`                                      |
+| Sandbox mode=on but setup fails            | Install Sysbox CE (see "Install Sysbox on the Ubuntu host"); confirm `sysbox-runc` in `docker info` runtimes; re-run `./scripts/setup.sh sandbox`                                              |
+| `namespace {"time" ""} does not exist`     | Docker ≥ 29.5.0 injecting a time namespace; apply the `features.time-namespaces: false` workaround under "Time-namespace workaround" above ([nestybox/sysbox#1011](https://github.com/nestybox/sysbox/issues/1011)) |
 | Sandbox enabled but no sock in container   | Ensure `COMPOSE_FILE` includes `docker-compose.sandbox.yml`, then `docker compose up -d`                                                      |
 | Sandbox image missing                      | `./scripts/sandbox/build-image.sh` (tags `OPENCODE_SANDBOX_IMAGE`, default `opencode-sandbox:local`)                                           |
 | Expose: Traefik network not found          | Set `OPENCODE_SANDBOX_TRAEFIK_NETWORK` to Traefik’s Docker network name; recreate OpenCode with sandbox overlay                                |
