@@ -153,7 +153,7 @@ configure_sandbox_mode() {
         return 0
       fi
       echo "Sandbox: Sysbox not detected — sandbox features off (stack continues)."
-      echo "Sandbox: see README — Optional Sysbox sibling sandboxes."
+      echo "Sandbox: see docs/sandbox.md — Optional Sysbox sibling sandboxes."
       _disable_sandbox_compose
       load_env 2>/dev/null || true
       return 0
@@ -172,7 +172,7 @@ configure_sandbox_mode() {
         return 0
       fi
       echo "Sandbox: ERROR — OPENCODE_SANDBOX_MODE=on but Sysbox probe failed." >&2
-      echo "Sandbox: Install Sysbox CE (package path) — see README section Optional Sysbox sibling sandboxes." >&2
+      echo "Sandbox: Install Sysbox CE (package path) — see docs/sandbox.md." >&2
       _disable_sandbox_compose
       return 1
       ;;

@@ -52,7 +52,7 @@ services:
       OPENCODE_CONTAINER_XDG: /var/opencode-xdg
       # Sysbox sibling sandboxes (optional). Default off — Mac-identical.
       # When enabled, setup sets OPENCODE_SANDBOX_ENABLED=1 and merges
-      # docker-compose.sandbox.yml (host docker.sock). See README.
+      # docker-compose.sandbox.yml (host docker.sock). See docs/sandbox.md.
       OPENCODE_SANDBOX_MODE: ${OPENCODE_SANDBOX_MODE:-off}
       OPENCODE_SANDBOX_ENABLED: ${OPENCODE_SANDBOX_ENABLED:-0}
       OPENCODE_SANDBOX_IMAGE: ${OPENCODE_SANDBOX_IMAGE:-opencode-sandbox:local}

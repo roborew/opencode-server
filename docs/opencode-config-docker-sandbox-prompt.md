@@ -22,7 +22,7 @@ When OPENCODE_SANDBOX_ENABLED=0 / probe unavailable: soft-skip; no invented dock
 
 ## Division of responsibility (required in docker-sandbox SKILL.md)
 | Concern | Owner | Agent |
-| Host Traefik + cloudflared | Human / opencode-server README | Never |
+| Host Traefik + cloudflared | Human / docs/sandbox.md | Never |
 | Traefik route for sandbox | sandbox expose/unexpose | Call CLI only |
 | CF tunnel | Never | Forbidden |
 | DNS {slug}.{apex} | cloudflare-api MCP (+ cloudflare skill for DNS semantics) | Upsert/delete CNAME → existing tunnel target when OPENCODE_SANDBOX_REVIEW_DNS=on |

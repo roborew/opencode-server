@@ -106,7 +106,7 @@ check_sandbox() {
     else
       preflight_record warn \
         "OPENCODE_SANDBOX_ENABLED=1 but sysbox-runc missing on host" \
-        "./scripts/setup.sh sandbox  # or install Sysbox — see README"
+        "./scripts/setup.sh sandbox  # or install Sysbox — see docs/sandbox.md"
     fi
     if container_running; then
       if docker exec "$CONTAINER_NAME" test -S /var/run/docker.sock 2>/dev/null; then
@@ -143,7 +143,7 @@ check_sandbox() {
   elif [[ "$mode" == "on" ]]; then
     preflight_record fail \
       "sandbox mode=on but OPENCODE_SANDBOX_ENABLED!=1" \
-      "install Sysbox + ./scripts/setup.sh sandbox — see README"
+      "install Sysbox + ./scripts/setup.sh sandbox — see docs/sandbox.md"
   else
     preflight_record warn "sandbox mode=${mode} enabled=${enabled}"
   fi
@@ -310,7 +310,7 @@ check_gh_auth() {
     fi
     if [[ -z "$scopes" ]]; then
       preflight_record warn "gh auth ok but missing classic scopes (repo, read:org)" \
-        "prefer a fine-grained PAT — see README"
+        "prefer a fine-grained PAT — see docs/integrations.md"
     else
       preflight_record ok "gh auth (classic scopes: ${scopes})"
     fi

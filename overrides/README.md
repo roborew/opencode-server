@@ -13,4 +13,4 @@ That is intentional: **indexing for Desktop/CLI attached to this server runs in 
 | Host `~/.config/opencode` (Desktop local config) | Keep **`false`** while using this stack — avoids duplicate MCP process storms |
 | This override (inside `opencode-server`) | **`true`** — Milvus-backed index |
 
-Local-only OpenCode (no Docker server): ignore these overrides; set `enabled` to `true` in the host config repo instead. Full write-up: root [README — Claude Context indexing](../README.md#claude-context-indexing-host-vs-docker).
+Local-only OpenCode (no Docker server): ignore these overrides; set `enabled` to `true` in the host config repo instead. Full write-up: [docs/integrations.md — Claude Context indexing](../docs/integrations.md#claude-context-indexing).
