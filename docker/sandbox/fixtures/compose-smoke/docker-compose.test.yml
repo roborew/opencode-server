@@ -1,6 +1,6 @@
 # Minimal self-contained compose for sandbox smoke (nested Docker).
 # Pattern for app repos: private network + app + Caddy (publish :80).
-# No external Traefik/traffic networks; no cloudflared in compose.
+# Host cloudflared only — not in compose.
 services:
   app:
     image: nginx:1.27-alpine

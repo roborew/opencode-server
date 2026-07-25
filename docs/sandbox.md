@@ -119,29 +119,28 @@ OpenCode config skill: [`opencode-config-docker-sandbox-prompt.md`](opencode-con
 
 ## App compose convention (self-contained)
 
-Feature / production-like test stacks must boot **inside the Sysbox sibling** with everything they need — no shared host Traefik/traffic Docker network.
+Feature / production-like test stacks must boot **inside the Sysbox sibling** with everything they need on a private compose network.
 
 `docker-compose.test.yml` (or documented equivalent) should:
 
-- Use a **private** compose network only (do not attach external host networks).
+- Use a **private** compose network only.
 - Include **Caddy** (or equivalent) reverse-proxying to app service(s).
 - **Publish Caddy `:80`** so the sibling exposes that port (TLS terminates at Cloudflare).
-- **Not** include `cloudflared` (one host tunnel is enough).
-- **Not** add Traefik labels or join a shared Traefik network.
+- Rely on the **host** cloudflared tunnel (do not add cloudflared to compose).
 
 See the smoke fixture under `docker/sandbox/fixtures/compose-smoke/` for a minimal pattern.
 
 ## Review URLs — host cloudflared + localhost publish
 
-**One host tunnel is enough.** Install **`cloudflared` via apt/CLI on Ubuntu** (preferred over Docker cloudflared). Agents do **not** join a shared Traefik network; each feature’s nested Caddy is published to `127.0.0.1:<hostPort>` on the Docker host, and a **public hostname** on the existing tunnel points at that origin.
+**One host tunnel is enough.** Install **`cloudflared` via apt/CLI on Ubuntu** (preferred over Docker cloudflared). Each feature’s nested Caddy is published to `127.0.0.1:<hostPort>` on the Docker host, and a **public hostname** on the existing tunnel points at that origin.
 
-Do **not** add cloudflared to app compose. Do **not** create a tunnel per feature branch. Do **not** register features on a shared Traefik/traffic network.
+Do **not** add cloudflared to app compose. Do **not** create a tunnel per feature branch.
 
 **Host setup:**
 
 1. [Install cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (Linux package).
 2. [Create one tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/) and [run as a service](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/local-management/as-a-service/).
-3. Prefer **remotely managed** public hostnames (Zero Trust / API) so agents can add/remove `{feature}.{apex}` → `http://127.0.0.1:<hostPort>` without editing static Traefik config.
+3. Prefer **remotely managed** public hostnames (Zero Trust / API) so agents can add/remove `{feature}.{apex}` → `http://127.0.0.1:<hostPort>`.
 4. [DNS to tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/routing-to-tunnel/) — CNAME `{feature}.{apex}` → `*.cfargotunnel.com` (agent upserts when `OPENCODE_SANDBOX_REVIEW_DNS=on`).
 
 **This stack env (sandbox overlay):**
