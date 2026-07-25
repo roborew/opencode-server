@@ -29,6 +29,7 @@ run_preflight() {
   check_opencode_health
   check_workspace_mount
   check_worktree_mount
+  check_repo_ownership
   check_repo_envs
   check_opencode_data_volume
   check_milvus
@@ -237,6 +238,108 @@ check_opencode_data_volume() {
       "opencode.db not linked to opencode-data volume" \
       "./scripts/wipe-opencode-data.sh  # rebuild entrypoint + fresh volume"
   fi
+}
+
+# Flag dirs under WORKSPACE_ROOT (OPENCODE_APPS_DIR) that the current user
+# cannot write to. Symptom: setup aborts with `touch ... Permission denied`
+# when creating per-repo .env files. Most common cause is a repo dir owned by
+# a different user (often root) inside an otherwise robin-owned workspace.
+# In interactive mode we offer to `sudo chown -R` to the current user.
+PREFLIGHT_FIX_OWNERSHIP="${PREFLIGHT_FIX_OWNERSHIP:-1}"
+
+check_repo_ownership() {
+  load_env 2>/dev/null || return
+  if [[ -z "${WORKSPACE_ROOT:-}" || ! -d "${WORKSPACE_ROOT}" ]]; then
+    return
+  fi
+  local current_uid
+  current_uid="$(id -u)"
+  local bad=() scanned=0
+  local d
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    scanned=$((scanned + 1))
+    local owner_uid
+    owner_uid="$(stat -c '%u' "$d" 2>/dev/null || echo 0)"
+    if [[ "$owner_uid" != "$current_uid" ]] && ! [[ -w "$d" ]]; then
+      bad+=("$d")
+    fi
+  done < <(find "$WORKSPACE_ROOT" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+  if (( scanned == 0 )); then
+    return
+  fi
+  if [[ ${#bad[@]} -eq 0 ]]; then
+    preflight_record ok "workspace dirs writable as $(id -un) (${scanned} entries)"
+    return
+  fi
+  local sample
+  sample="$(printf '%s, ' "${bad[@]:0:3}" | sed 's/, $//')"
+  if ! try_fix_workspace_ownership "$WORKSPACE_ROOT" "${bad[@]}"; then
+    preflight_record warn \
+      "${#bad[@]}/${scanned} workspace dir(s) not owned/writable by $(id -un): ${sample}" \
+      "sudo chown -R \"$(id -un):$(id -gn)\" \"$WORKSPACE_ROOT\"   # then ./scripts/setup.sh projects local"
+    return
+  fi
+  # Re-scan after attempted fix; if anything is still bad, warn.
+  local still_bad=()
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    local owner_uid
+    owner_uid="$(stat -c '%u' "$d" 2>/dev/null || echo 0)"
+    if [[ "$owner_uid" != "$current_uid" ]] && ! [[ -w "$d" ]]; then
+      still_bad+=("$d")
+    fi
+  done < <(find "$WORKSPACE_ROOT" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+  if [[ ${#still_bad[@]} -eq 0 ]]; then
+    preflight_record ok "workspace dirs writable as $(id -un) (${scanned} entries; auto-chowned)"
+    return
+  fi
+  local still_sample
+  still_sample="$(printf '%s, ' "${still_bad[@]:0:3}" | sed 's/, $//')"
+  preflight_record warn \
+    "${#still_bad[@]}/${scanned} workspace dir(s) still not writable after auto-fix: ${still_sample}" \
+    "sudo chown -R \"$(id -un):$(id -gn)\" \"$WORKSPACE_ROOT\""
+}
+
+# Offer to chown WORKSPACE_ROOT to the current user via sudo. Returns 0 if a
+# chown actually ran (and succeeded), 1 if the user declined / sudo missing /
+# chown failed. Set PREFLIGHT_FIX_OWNERSHIP=0 to skip the offer entirely.
+try_fix_workspace_ownership() {
+  local root="$1"
+  shift
+  local -a bad=("$@")
+  if [[ "${PREFLIGHT_FIX_OWNERSHIP}" != "1" ]]; then
+    return 1
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    return 1
+  fi
+  local user group
+  user="$(id -un)"
+  group="$(id -gn)"
+  if [[ -t 1 && -t 0 ]]; then
+    echo
+    echo "Workspace dirs not owned by ${user}. Auto-fix will run:"
+    echo "  sudo chown -R ${user}:${group} ${root}"
+    echo "Affected: ${#bad[@]} dir(s) under ${root}"
+    local ans="n"
+    if [[ "${YES:-0}" == "1" ]]; then
+      ans="y"
+    else
+      read -r -p "Run sudo chown now? [Y/n] " ans
+    fi
+    if ! [[ "${ans:-y}" =~ ^[Yy]?$ ]]; then
+      return 1
+    fi
+  fi
+  if sudo chown -R "${user}:${group}" "${root}" 2>/tmp/preflight-chown.err; then
+    rm -f /tmp/preflight-chown.err
+    return 0
+  fi
+  echo "sudo chown failed:" >&2
+  cat /tmp/preflight-chown.err >&2 || true
+  rm -f /tmp/preflight-chown.err
+  return 1
 }
 
 check_worktree_mount() {

@@ -135,6 +135,11 @@ ensure_repo_env_interactive() {
       ;;
     missing)
       echo "  ${name}: .env missing (sandbox compose builds blocked until created)"
+      if [[ ! -w "${repo}" ]]; then
+        echo "    Skipped — ${repo} is not writable as $(id -un) (owner: $(stat -c '%U:%G' "${repo}" 2>/dev/null || echo '?'))." >&2
+        echo "    Fix: sudo chown -R \"$(id -un):$(id -gn)\" \"${repo}\"" >&2
+        return 0
+      fi
       local answer="n"
       if [[ "$yes" == "1" ]]; then
         answer="y"
