@@ -109,7 +109,7 @@ sandbox create --id feat-slug --worktree /absolute/path/to/repo
 sandbox exec --id feat-slug -- docker compose -f docker-compose.test.yml run --rm test
 sandbox status --id feat-slug
 sandbox destroy --id feat-slug
-sandbox expose --id feat-slug --port 3000 --hostname feat-slug.example.com
+sandbox expose --id feat-slug --port 80 --hostname feat-slug.example.com
 sandbox unexpose --id feat-slug
 ```
 
@@ -117,45 +117,56 @@ Exit code `2` / JSON `"reason":"SANDBOX_UNAVAILABLE"` means sandboxes are off �
 
 OpenCode config skill: [`opencode-config-docker-sandbox-prompt.md`](opencode-config-docker-sandbox-prompt.md) (also live in `roborew/opencode` as `skills/docker-sandbox`).
 
-## Review URLs (Phase 2) — existing Traefik + host Cloudflare Tunnel
+## App compose convention (self-contained)
 
-**One host tunnel is enough.** Install **`cloudflared` via apt/CLI on Ubuntu** (preferred over Docker cloudflared). Point that tunnel at Traefik. Then any number of zones/subdomains can CNAME to the tunnel; Traefik routes by `Host()`.
+Feature / production-like test stacks must boot **inside the Sysbox sibling** with everything they need — no shared host Traefik/traffic Docker network.
 
-Do **not** add cloudflared to this compose stack. Do **not** create a tunnel per feature branch.
+`docker-compose.test.yml` (or documented equivalent) should:
 
-**Host setup (link out):**
+- Use a **private** compose network only (do not attach external host networks).
+- Include **Caddy** (or equivalent) reverse-proxying to app service(s).
+- **Publish Caddy `:80`** so the sibling exposes that port (TLS terminates at Cloudflare).
+- **Not** include `cloudflared` (one host tunnel is enough).
+- **Not** add Traefik labels or join a shared Traefik network.
 
-1. Confirm Traefik already routes other containers on a shared Docker network.
-2. [Install cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (Linux package).
-3. [Create a tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/) and [run as a service](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/local-management/as-a-service/).
-4. [Configure](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/) ingress / public hostname to Traefik.
-5. [DNS to tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/routing-to-tunnel/) — apex and/or `*.apex` wildcards; otherwise the agent upserts `{feature}.{apex}` when `OPENCODE_SANDBOX_REVIEW_DNS=on`.
+See the smoke fixture under `docker/sandbox/fixtures/compose-smoke/` for a minimal pattern.
+
+## Review URLs — host cloudflared + localhost publish
+
+**One host tunnel is enough.** Install **`cloudflared` via apt/CLI on Ubuntu** (preferred over Docker cloudflared). Agents do **not** join a shared Traefik network; each feature’s nested Caddy is published to `127.0.0.1:<hostPort>` on the Docker host, and a **public hostname** on the existing tunnel points at that origin.
+
+Do **not** add cloudflared to app compose. Do **not** create a tunnel per feature branch. Do **not** register features on a shared Traefik/traffic network.
+
+**Host setup:**
+
+1. [Install cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (Linux package).
+2. [Create one tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-remote-tunnel/) and [run as a service](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/local-management/as-a-service/).
+3. Prefer **remotely managed** public hostnames (Zero Trust / API) so agents can add/remove `{feature}.{apex}` → `http://127.0.0.1:<hostPort>` without editing static Traefik config.
+4. [DNS to tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/routing-to-tunnel/) — CNAME `{feature}.{apex}` → `*.cfargotunnel.com` (agent upserts when `OPENCODE_SANDBOX_REVIEW_DNS=on`).
 
 **This stack env (sandbox overlay):**
 
 ```bash
-OPENCODE_SANDBOX_TRAEFIK_NETWORK=traefik   # must match Traefik’s Docker network
-OPENCODE_SANDBOX_TRAEFIK_ENTRYPOINT=websecure
-# OPENCODE_SANDBOX_TRAEFIK_CERTRESOLVER=  # optional
 OPENCODE_SANDBOX_REVIEW_DNS=on
+# OPENCODE_SANDBOX_ROUTE_IMAGE=alpine/socat:1.8.0.0   # localhost publish helper
+# OPENCODE_SANDBOX_TUNNEL_ID=<existing-tunnel-uuid>     # optional hint for agents
 ```
 
-Hostname pattern: **`{feature-slug}.{app-apex-domain}`** (e.g. `blockshed.blockshared.com`). Skill supplies `--hostname`; nested compose must **publish** the app port on the sibling.
+Hostname pattern: **`{feature-slug}.{app-apex-domain}`** (e.g. `blockshed.blockshared.com`). Nested compose must publish Caddy (typically port `80`) on the sibling before expose.
 
 ```bash
-sandbox expose --id blockshed --port 3000 --hostname blockshed.blockshared.com
-# → host route helper + Traefik labels; DNS via cloudflare-api MCP when REVIEW_DNS=on
+sandbox expose --id blockshed --port 80 --hostname blockshed.blockshared.com
+# → JSON includes host_port + origin http://127.0.0.1:<host_port>
+# → agent: tunnel public hostname → origin + DNS CNAME when REVIEW_DNS=on
 sandbox unexpose --id blockshed
 sandbox destroy --id blockshed   # unexpose first
 ```
 
-**Cloudflare MCP scopes:** Zone **DNS Edit** for review hostnames. Re-auth after changing scopes:
+**Cloudflare MCP scopes:** Zone **DNS Edit**, plus permission to manage **public hostnames on the existing tunnel** (Tunnel Edit on that tunnel — still no Tunnel Create). Re-auth after changing scopes:
 
 ```bash
 ./scripts/setup.sh mcp-auth cloudflare-api
 ```
-
-Do not require Tunnel Create/Edit for this workflow (host tunnel is already running).
 
 ## App Infisical / `.env` for sandbox builds
 
@@ -172,5 +183,5 @@ OpenCode server Infisical (`infisical run` in the entrypoint) does **not** injec
 
 | Build/test | Web review |
 | ---------- | ---------- |
-| Sysbox sibling + repo Compose | Route helper + Traefik labels + existing tunnel |
-| Needs per-repo `.env` (Infisical) | Hostname `{feature}.{apex}`; DNS optional via MCP |
+| Sysbox sibling + self-contained Compose (incl. Caddy) | Localhost publish helper + existing host tunnel |
+| Needs per-repo `.env` (Infisical) | Hostname `{feature}.{apex}`; tunnel public hostname + DNS via MCP |

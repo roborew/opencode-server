@@ -111,16 +111,17 @@ Do **not** set `OPENCODE_OAUTH_CALLBACK_PUBLISH=0.0.0.0:19876` on a public dropl
 
 ### Cloudflare OAuth permissions (recommended)
 
-On the Cloudflare authorize screen, grant **least privilege**: **DNS Write** is the only write most agent work needs; keep everything else **Read**. Prefer specific zones over “all zones” when the UI allows it.
+On the Cloudflare authorize screen, grant **least privilege** for agent work. Prefer specific zones over “all zones” when the UI allows it.
 
 | Scope / permission | Access | Purpose |
 | ------------------ | ------ | ------- |
-| **Zone → DNS** | **Edit** (Write) | Create/update/delete DNS records |
+| **Zone → DNS** | **Edit** (Write) | Create/update/delete DNS records for review hostnames |
+| **Account → Cloudflare Tunnel** (or Zero Trust tunnel) | **Edit** on the **existing** tunnel only | Upsert/delete public hostnames → `http://127.0.0.1:<hostPort>` for sandbox review |
 | Zone → Zone | Read | List zones / zone metadata |
 | Account → Account Settings (or Account Resources) | Read | Discover account ID / list accounts |
 | Workers Scripts, KV, R2, D1, Pages, Firewall, … | Read (optional) | Inspect config without changing it |
 
-**Usually skip (unless you explicitly need them):** Billing, User Admin, Account Edit, Workers Scripts Edit, Firewall Edit, Access Edit, SSL/TLS Edit, Cache Purge, **Tunnel Create/Edit** (host cloudflared is enough for review URLs) — those are high-impact writes.
+**Usually skip (unless you explicitly need them):** Billing, User Admin, Account Edit, Workers Scripts Edit, Firewall Edit, Access Edit, SSL/TLS Edit, Cache Purge, **Tunnel Create** (one host tunnel already exists — do not create more) — those are high-impact writes.
 
 **Add later if needed:**
 

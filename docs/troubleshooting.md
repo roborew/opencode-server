@@ -26,6 +26,7 @@
 | `namespace {"time" ""} does not exist` | Docker ≥ 29.5.0 injecting a time namespace; apply the `features.time-namespaces: false` workaround in [sandbox.md](sandbox.md#time-namespace-workaround-docker-engine--2950) ([nestybox/sysbox#1011](https://github.com/nestybox/sysbox/issues/1011)) |
 | Sandbox enabled but no sock in container | Ensure `COMPOSE_FILE` includes `docker-compose.sandbox.yml`, then `docker compose up -d` |
 | Sandbox image missing | `./scripts/sandbox/build-image.sh` (tags `OPENCODE_SANDBOX_IMAGE`, default `opencode-sandbox:local`) |
-| Expose: Traefik network not found | Set `OPENCODE_SANDBOX_TRAEFIK_NETWORK` to Traefik’s Docker network name; recreate OpenCode with sandbox overlay |
+| Expose: publish helper failed | Ensure `OPENCODE_SANDBOX_ROUTE_IMAGE` is pullable; sibling must publish Caddy port; check `sandbox expose` JSON for `origin` |
+| Expose: review URL 502 | Upsert tunnel public hostname → `origin` from expose JSON; confirm host cloudflared is running |
 | Repo sandbox build lacks secrets | `./scripts/setup.sh projects local` — create `.env` + paste Infisical vars (not `.env.example`) |
-| Cloudflare DNS write denied | `./scripts/setup.sh mcp-auth cloudflare-api` and grant Zone DNS Edit |
+| Cloudflare DNS / tunnel hostname denied | `./scripts/setup.sh mcp-auth cloudflare-api` — grant Zone DNS Edit + Tunnel Edit on the existing tunnel (not Tunnel Create) |

@@ -457,7 +457,7 @@ run_mcp_auth() {
   load_env || true
   echo "Re-authenticating mcp/${name} (close OpenCode Desktop during OAuth)."
   if [[ "$name" == "cloudflare-api" ]]; then
-    echo "Grant Zone DNS Edit for review hostnames. Do not require Tunnel Create — host cloudflared is enough."
+    echo "Grant Zone DNS Edit + Tunnel Edit on the existing host tunnel (public hostnames). Do not require Tunnel Create."
   fi
   echo "Browser must reach 127.0.0.1:19876 (local or ssh -L)."
   mcp_clear_pending_oauth "$name" || true

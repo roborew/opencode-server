@@ -1,5 +1,45 @@
-# Minimal compose test fixture for sandbox smoke (nested Docker).
+# Minimal self-contained compose for sandbox smoke (nested Docker).
+# Pattern for app repos: private network + app + Caddy (publish :80).
+# No external Traefik/traffic networks; no cloudflared in compose.
 services:
+  app:
+    image: nginx:1.27-alpine
+    networks: [internal]
+
+  caddy:
+    image: caddy:2.8-alpine
+    networks: [internal]
+    ports:
+      - "80:80"
+    depends_on:
+      - app
+    command:
+      - caddy
+      - reverse-proxy
+      - --from
+      - :80
+      - --to
+      - app:80
+
   test:
-    image: alpine:3.20
-    command: ["sh", "-c", "echo sandbox-smoke-ok && exit 0"]
+    image: curlimages/curl:8.11.1
+    networks: [internal]
+    depends_on:
+      - caddy
+    entrypoint:
+      - sh
+      - -c
+      - |
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          if curl -sf http://caddy/ >/dev/null; then
+            echo sandbox-smoke-ok
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "smoke: caddy not ready" >&2
+        exit 1
+
+networks:
+  internal:
+    driver: bridge
