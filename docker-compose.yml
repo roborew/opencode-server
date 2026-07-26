@@ -77,9 +77,6 @@ services:
       - ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:/var/opencode-xdg/opencode/worktree:delegated
       - ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:delegated
       - ${OPENCODE_APPS_DIR:-${HOME}/projects}:${OPENCODE_APPS_DIR:-${HOME}/projects}:delegated
-      # Optional: only mount the host SSH agent socket when set. Empty
-      # SSH_AUTH_SOCK skips the bind entirely (container uses GH_TOKEN for git).
-      - ${SSH_AUTH_SOCK:-/dev/null}:/ssh-agent
     working_dir: ${OPENCODE_APPS_DIR:-${HOME}/projects}
     depends_on:
       milvus-standalone:
