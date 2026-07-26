@@ -1,18 +1,25 @@
 # Environment variables
 
-## Local development
+## Local development (Infisical-first)
 
-All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .env`.
+**Supported start path:** [`./scripts/compose.sh`](../scripts/compose.sh) (wraps `infisical run -- docker compose …`). Prefer that over bare `docker compose` so Compose interpolation (e.g. `TWINGATE_*`) gets secrets from Infisical at start.
+
+| Where | What |
+| ----- | ---- |
+| Host `.env` | Infisical bootstrap (`INFISICAL_*`) + non-secret local config (paths, ports, `COMPOSE_PROFILES`, `OPENCODE_UID`/`GID`) |
+| Infisical project | Runtime secrets: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, API keys, `GH_*`, git identity, etc. |
+
+Do **not** bake secrets into the Docker image. Do **not** permanently `infisical export` / env-pull into `.env` for this stack.
 
 | Variable | Purpose |
 | -------- | ------- |
-| `OPENCODE_SERVER_PASSWORD` | HTTP basic auth for the server |
+| `OPENCODE_SERVER_PASSWORD` | HTTP basic auth (store in Infisical; optional host copy for preflight auth checks) |
 | `OPENCODE_SERVER_USERNAME` | Basic auth username (default `opencode`) |
-| `OPENCODE_UID`, `OPENCODE_GID` | Host UID/GID the container drops to after startup (bind-mount file ownership). setup/preflight auto-fills from the logged-in user; leave unset unless you need a pin |
+| `OPENCODE_UID`, `OPENCODE_GID` | Host UID/GID the container drops to after startup (bind-mount file ownership). `compose.sh` / setup/preflight auto-fills from the logged-in user; leave unset unless you need a pin |
 | `OPENCODE_USERNAME` | Optional host username; setup resolves UID/GID via `id -u`/`id -g` when numeric IDs are unset |
-| `TWINGATE_*` | Connector credentials |
-| `OPENAI_API_KEY` | Claude Context embeddings |
-| `OPENROUTER_API_KEY` | Model provider (if not in persisted auth volume) |
+| `TWINGATE_*` | Connector credentials — store in Infisical; injected into Compose via `./scripts/compose.sh` |
+| `OPENAI_API_KEY` | Claude Context embeddings (Infisical) |
+| `OPENROUTER_API_KEY` | Model provider (Infisical; or persisted auth volume) |
 | `GH_TOKEN`, `GH_ORG`, `GH_PROJECT` | GitHub CLI / project board workflows |
 | `GIT_USER_NAME`, `GIT_USER_EMAIL` | Git author/committer for agent commits in the container |
 | `CODERABBIT_API_KEY` | CodeRabbit CLI agent reviews |
@@ -32,11 +39,18 @@ All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .
 
 See [`.env.example`](../.env.example) for the full template, including sandbox and Infisical keys.
 
+### Preflight vs Infisical-only host `.env`
+
+Host preflight reads **host** `.env`. If `OPENCODE_SERVER_PASSWORD` exists only in Infisical, the password / health-auth check may fail even when the container is fine (entrypoint injects the password inside). Prefer verifying with container logs or an authenticated curl using the Infisical password, or keep a host copy of that one value for preflight.
+
 ## Deployed environments (Infisical)
 
-The image includes the Infisical CLI. The entrypoint wraps the server with Infisical when configured:
+Two injection points (both runtime — never build-time):
 
-- If `INFISICAL_PROJECT_ID` + `INFISICAL_DOMAIN` (or `INFISICAL_API_URL`) + auth are set → `infisical run` injects secrets at runtime.
+1. **Compose start** — `./scripts/compose.sh` runs `infisical run -- docker compose …` so host-side interpolation (Twingate connector, etc.) sees project secrets.
+2. **opencode container** — the image includes the Infisical CLI; the entrypoint wraps `opencode serve` with `infisical run` when bootstrap is configured.
+
+- If `INFISICAL_PROJECT_ID` + `INFISICAL_DOMAIN` (or `INFISICAL_API_URL`) + auth are set → secrets inject at runtime.
 - Otherwise → uses compose `.env` values directly (local fallback).
 
 **Infisical bootstrap** (set on the host / platform; secrets live in Infisical):
@@ -51,4 +65,4 @@ The image includes the Infisical CLI. The entrypoint wraps the server with Infis
 
 Store in Infisical: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GH_*`, `GIT_USER_NAME`, `GIT_USER_EMAIL`, `CODERABBIT_API_KEY`, etc.
 
-Set `INFISICAL_USE_CLI=false` to force local `.env` only.
+Set `INFISICAL_USE_CLI=false` to force local `.env` only for the **opencode** entrypoint (Compose wrapper still needs Infisical when you use `compose.sh`).

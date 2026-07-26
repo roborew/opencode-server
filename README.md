@@ -14,20 +14,27 @@ Self-contained Docker Compose stack for a headless OpenCode server, Twingate rem
 
 ## Install / quick start
 
-1. Copy env template and fill in secrets:
+1. Copy env template and set **Infisical bootstrap** (plus any non-secret local config):
 
 ```bash
 cp .env.example .env
-# Edit .env — at minimum: OPENCODE_SERVER_PASSWORD, TWINGATE_*, OPENAI_API_KEY
+# Edit .env — at minimum: INFISICAL_PROJECT_ID, INFISICAL_ENV,
+# INFISICAL_DOMAIN (or INFISICAL_API_URL), INFISICAL_CLIENT_ID + INFISICAL_CLIENT_SECRET
+# Optional local config: OPENCODE_APPS_DIR, ports, COMPOSE_PROFILES
 ```
+
+Secrets (`TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, API keys, etc.) live in **Infisical**, not in `.env`. Do not bake them into the image; do not permanently `infisical export` / env-pull into `.env`.
 
 2. Optional — reuse existing Milvus data (`DOCKER_VOLUME_DIRECTORY=../milvus` is already the default in `.env.example`).
 
-3. Build and start:
+3. Install the Infisical CLI on the host (once), then build and start via the wrapper:
 
 ```bash
-docker compose up -d --build
+brew install infisical/get-cli/infisical   # if needed
+./scripts/compose.sh up -d --build
 ```
+
+`./scripts/compose.sh` runs `infisical run -- docker compose …` so Compose interpolation (including Twingate) gets secrets at start. Prefer this over bare `docker compose` when using Infisical.
 
 4. Post-compose setup (preflight + projects + hosts):
 
@@ -66,6 +73,7 @@ Connect remotely (with Twingate): `http://opencode.local:4097` or `opencode atta
 ├── docker-compose.yml
 ├── docker-compose.sandbox.yml   # Optional Ubuntu overlay
 ├── scripts/setup.sh             # preflight + projects + bootstrap + mcp-auth
+├── scripts/compose.sh           # Infisical-injected docker compose wrapper
 ├── scripts/doctor-perf.sh
 ├── scripts/sandbox/             # sandbox CLI + build/smoke
 ├── docker/                      # entrypoint, merge-config, plugins

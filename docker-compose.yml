@@ -108,14 +108,15 @@ services:
     env_file:
       - .env
     environment:
-      TWINGATE_NETWORK: ${TWINGATE_NETWORK}
-      TWINGATE_ACCESS_TOKEN: ${TWINGATE_ACCESS_TOKEN}
-      TWINGATE_REFRESH_TOKEN: ${TWINGATE_REFRESH_TOKEN}
+      TWINGATE_NETWORK: ${TWINGATE_NETWORK:-}
+      TWINGATE_ACCESS_TOKEN: ${TWINGATE_ACCESS_TOKEN:-}
+      TWINGATE_REFRESH_TOKEN: ${TWINGATE_REFRESH_TOKEN:-}
       TWINGATE_LABEL_HOSTNAME: opencode-connector
       TWINGATE_LOG_ANALYTICS: v2
       TWINGATE_LOG_LEVEL: "3"
       # Do NOT set TWINGATE_DNS to 1.1.1.1/8.8.8.8 — that bypasses Docker
       # embedded DNS and breaks resolving OPENCODE_FQDN / service names.
+      # Prefer ./scripts/compose.sh so TWINGATE_* come from Infisical at start.
     sysctls:
       net.ipv4.ping_group_range: "0 2147483647"
     networks:
