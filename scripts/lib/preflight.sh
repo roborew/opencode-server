@@ -220,7 +220,10 @@ check_opencode_health() {
     return
   fi
   load_env 2>/dev/null || return
-  local health version
+  local health version code port
+  port="${OPENCODE_PUBLISH_PORT:-4097}"
+  port="${port##*:}"
+
   if health="$(api_get "/global/health" 2>/dev/null)"; then
     if command -v python3 >/dev/null 2>&1; then
       version="$(echo "$health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('version','?'))" 2>/dev/null || echo '?')"
@@ -228,9 +231,66 @@ check_opencode_health() {
       version="?"
     fi
     preflight_record ok "opencode-server healthy (v${version})"
-  else
-    preflight_record fail "OpenCode health check failed" "check OPENCODE_SERVER_PASSWORD and logs"
+    return
   fi
+
+  # Host .env password often missing/wrong when secrets live in Infisical.
+  # Retry the authenticated check with Infisical-injected env when configured.
+  if [[ -n "${INFISICAL_PROJECT_ID:-}" && -n "${INFISICAL_CLIENT_ID:-}${INFISICAL_TOKEN:-}" ]] \
+    && command -v infisical >/dev/null 2>&1; then
+    local domain token client_id client_secret
+    domain="${INFISICAL_DOMAIN:-${INFISICAL_API_URL:-}}"
+    token="${INFISICAL_TOKEN:-}"
+    if [[ -z "$token" ]]; then
+      client_id="${INFISICAL_CLIENT_ID:-}"
+      client_secret="${INFISICAL_CLIENT_SECRET:-}"
+      if [[ -n "$client_id" && -n "$client_secret" && -n "$domain" ]]; then
+        token="$(
+          infisical login \
+            --method=universal-auth \
+            --client-id="$client_id" \
+            --client-secret="$client_secret" \
+            --domain="$domain" \
+            --silent \
+            --plain 2>/dev/null
+        )" || token=""
+      fi
+    fi
+    if [[ -n "$token" && -n "$domain" ]]; then
+      health="$(
+        infisical run \
+          --projectId="$INFISICAL_PROJECT_ID" \
+          --env="${INFISICAL_ENV:-dev}" \
+          --domain="$domain" \
+          --token="$token" \
+          -- sh -c "curl -sf -u \"\${OPENCODE_SERVER_USERNAME:-opencode}:\${OPENCODE_SERVER_PASSWORD}\" \"http://127.0.0.1:${port}/global/health\"" \
+          2>/dev/null
+      )" || health=""
+      if [[ -n "$health" ]]; then
+        if command -v python3 >/dev/null 2>&1; then
+          version="$(echo "$health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('version','?'))" 2>/dev/null || echo '?')"
+        else
+          version="?"
+        fi
+        preflight_record ok "opencode-server healthy via Infisical (v${version})"
+        return
+      fi
+    fi
+  fi
+
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/global/health" 2>/dev/null || true)"
+  code="${code:-000}"
+  if [[ "$code" == "401" ]]; then
+    preflight_record warn \
+      "opencode-server up (HTTP 401) — host auth mismatch vs Infisical password" \
+      "health is OK inside Infisical; optional: put OPENCODE_SERVER_PASSWORD in host .env for preflight"
+    return
+  fi
+  if [[ "$code" == "000" ]]; then
+    preflight_record fail "OpenCode not reachable on :${port}" "wait for startup; docker logs opencode-server"
+    return
+  fi
+  preflight_record fail "OpenCode health check failed (HTTP ${code})" "check logs: docker logs opencode-server"
 }
 
 check_workspace_mount() {

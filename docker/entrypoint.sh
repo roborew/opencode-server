@@ -14,12 +14,16 @@ if [[ "$(id -u)" -eq 0 ]]; then
     [[ -e "$path" ]] || return 0
     chown -R "${OPENCODE_UID}:${OPENCODE_GID}" "$path" 2>/dev/null || true
   }
+  # Named volume only — safe to recurse.
   fix_as_root /var/lib/opencode-data
-  fix_as_root /var/opencode-xdg
-  if [[ -n "${OPENCODE_WORKTREES_DIR:-}" ]]; then
-    fix_as_root "${OPENCODE_WORKTREES_DIR}"
-  fi
   fix_as_root /home/opencode
+  # XDG dir itself (not -R): worktree is a host bind mount and can be huge;
+  # recursive chown there blocks startup for minutes.
+  mkdir -p /var/opencode-xdg/opencode /var/opencode-xdg/sandboxes
+  chown "${OPENCODE_UID}:${OPENCODE_GID}" \
+    /var/opencode-xdg /var/opencode-xdg/opencode /var/opencode-xdg/sandboxes \
+    2>/dev/null || true
+  # Do not chown OPENCODE_WORKTREES_DIR / OPENCODE_APPS_DIR — host-owned binds.
 
   # macOS host GIDs (e.g. staff=20) may not exist in the Ubuntu image's
   # group database, and `runuser -g "#N"` is unreliable. Ensure the GID

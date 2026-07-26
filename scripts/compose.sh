@@ -118,10 +118,23 @@ fi
 
 export INFISICAL_TOKEN="$token"
 
+# Host-local config must win over Infisical. Paths/UID differ per machine;
+# Infisical often carries another host's OPENCODE_APPS_DIR and breaks mounts.
+pin_apps="${OPENCODE_APPS_DIR:-}"
+pin_wt="${OPENCODE_WORKTREES_DIR:-}"
+pin_uid="${OPENCODE_UID:-}"
+pin_gid="${OPENCODE_GID:-}"
+
 echo "compose.sh: injecting Infisical secrets (env=${infisical_env}) into docker compose $*" >&2
+echo "compose.sh: pinning host OPENCODE_APPS_DIR=${pin_apps} UID:GID=${pin_uid}:${pin_gid}" >&2
 exec infisical run \
   --projectId="$project_id" \
   --env="$infisical_env" \
   --domain="$domain" \
   --token="$token" \
-  -- docker compose "$@"
+  -- env \
+    OPENCODE_APPS_DIR="$pin_apps" \
+    OPENCODE_WORKTREES_DIR="$pin_wt" \
+    OPENCODE_UID="$pin_uid" \
+    OPENCODE_GID="$pin_gid" \
+    docker compose "$@"
