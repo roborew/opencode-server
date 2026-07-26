@@ -9,8 +9,24 @@ ARG INFISICAL_CLI_VERSION=0.43.84
 ARG YQ_VERSION=v4.53.2
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PATH="/root/.opencode/bin:/root/.local/bin:${PATH}"
+ENV HOME=/home/opencode
+ENV PATH="/home/opencode/.opencode/bin:/home/opencode/.local/bin:${PATH}"
 ENV INFISICAL_DISABLE_UPDATE_CHECK=true
+
+# Non-root runtime user. Always create a dedicated `opencode` user/group so
+# COPY --chown=opencode:opencode and the entrypoint's chown step have a stable
+# name to target. --non-unique / -o lets useradd/groupadd succeed even when the
+# requested uid/gid collides with the base image (Ubuntu 24.04 ships `ubuntu`
+# at 1000:1000). The runtime uid/gid is then re-applied by the entrypoint on
+# first boot to match the host user (via compose's `user:` directive).
+RUN if ! getent group opencode >/dev/null ; then \
+      groupadd -o -g "${OPENCODE_GID}" opencode || groupadd opencode ; \
+    fi ; \
+    if ! getent passwd opencode >/dev/null ; then \
+      useradd -o -u "${OPENCODE_UID}" -g opencode -M -s /bin/bash opencode \
+        || useradd -g opencode -M -s /bin/bash opencode ; \
+    fi ; \
+    mkdir -p /home/opencode && chown opencode:opencode /home/opencode
 
 # Base + PRD/fanout CLI deps: python3, git, jq (bash/sed/grep/coreutils/curl from Ubuntu)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -79,9 +95,9 @@ RUN npm install -g @zilliz/claude-context-mcp@latest
 
 # CodeRabbit CLI (agent code review)
 # install.sh prints SUCCESS then can exit 2 under dash (`| sh`) or when updating
-# shell rc files in Docker. PATH already includes /root/.local/bin.
+# shell rc files in Docker. PATH already includes /home/opencode/.local/bin.
 RUN curl -fsSL https://cli.coderabbit.ai/install.sh | bash; \
-    test -x /root/.local/bin/coderabbit
+    test -x /home/opencode/.local/bin/coderabbit
 
 # Docker CLI only (no dockerd). Used when docker-compose.sandbox.yml mounts the
 # host socket so agents can create Sysbox sibling sandboxes. Without the socket
@@ -96,30 +112,41 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-# OpenCode CLI
+# OpenCode CLI (installed to /home/opencode/.opencode/bin via curl installer)
 RUN curl -fsSL https://opencode.ai/install | bash
 
 # Agents, skills, opencode.json from GitHub (read-only at runtime)
-RUN git clone --depth 1 --branch "${CONFIG_REF}" "${CONFIG_REPO}" /root/.config/opencode \
-    && cd /root/.config/opencode && npm ci
+RUN git clone --depth 1 --branch "${CONFIG_REF}" "${CONFIG_REPO}" /home/opencode/.config/opencode \
+    && cd /home/opencode/.config/opencode && npm ci \
+    && chown -R opencode:opencode /home/opencode
 
 # Deployment-owned overrides (not from config repo)
-COPY overrides/ /root/overrides/
-COPY docker/plugins/ /root/overrides/plugins/
+COPY --chown=opencode:opencode overrides/ /home/opencode/overrides/
+COPY --chown=opencode:opencode docker/plugins/ /home/opencode/overrides/plugins/
 COPY docker/entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
+COPY docker/entrypoint-user.sh /usr/local/bin/opencode-entrypoint-user.sh
 COPY docker/configure-git-identity.sh /usr/local/bin/configure-git-identity.sh
 COPY docker/merge-config.py /usr/local/bin/merge-config.py
 COPY docker/rewrite-worktree-gitdirs.py /usr/local/bin/rewrite-worktree-gitdirs.py
 COPY docker/worktree-delete-guard.py /usr/local/bin/worktree-delete-guard.py
 COPY docker/opencode-serve-guarded.sh /usr/local/bin/opencode-serve-guarded.sh
-COPY scripts/sandbox/sandbox /usr/local/bin/sandbox
-RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/configure-git-identity.sh \
+COPY --chown=opencode:opencode scripts/sandbox/sandbox /usr/local/bin/sandbox
+RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/opencode-entrypoint-user.sh \
+    /usr/local/bin/configure-git-identity.sh \
     /usr/local/bin/merge-config.py \
     /usr/local/bin/rewrite-worktree-gitdirs.py /usr/local/bin/worktree-delete-guard.py \
     /usr/local/bin/opencode-serve-guarded.sh \
     /usr/local/bin/sandbox
 
+# Runtime data dirs are NOT baked into the image — the runtime uid owns them
+# and may differ from the build-time uid (host 1000 vs base-image ubuntu 1000
+# vs macOS 501). The entrypoint creates them with the correct ownership on
+# every boot, so any stale state from a previous container is overwritten.
+
 EXPOSE 4097 19876
 
+# Runs as compose's `user:` (typically 1000:1000 on Linux, 501:20 on macOS).
+# The entrypoint elevates to root only for the bits that need it (Infisical
+# login writes to /root/.infisical; chown fixes), then drops back via runuser.
 ENTRYPOINT ["/usr/local/bin/opencode-entrypoint.sh"]
-CMD ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4097"]
+CMD ["opencode", "serve", "--hostname", "*******", "--port", "4097"]
