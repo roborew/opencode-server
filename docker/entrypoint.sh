@@ -20,8 +20,22 @@ if [[ "$(id -u)" -eq 0 ]]; then
     fix_as_root "${OPENCODE_WORKTREES_DIR}"
   fi
   fix_as_root /home/opencode
+
+  # macOS host GIDs (e.g. staff=20) may not exist in the Ubuntu image's
+  # group database, and `runuser -g "#N"` is unreliable. Ensure the GID
+  # exists, then drop with setpriv (no /etc/passwd entry required).
+  if ! getent group "${OPENCODE_GID}" >/dev/null 2>&1; then
+    groupadd -o -g "${OPENCODE_GID}" "hostgid${OPENCODE_GID}" 2>/dev/null || true
+  fi
   echo "opencode-entrypoint: dropping to uid=${OPENCODE_UID} gid=${OPENCODE_GID}" >&2
-  exec runuser -u "#${OPENCODE_UID}" -g "#${OPENCODE_GID}" -- "$0" "$@"
+  if command -v setpriv >/dev/null 2>&1; then
+    exec setpriv --reuid="${OPENCODE_UID}" --regid="${OPENCODE_GID}" --clear-groups -- "$0" "$@"
+  fi
+  gname="$(getent group "${OPENCODE_GID}" | cut -d: -f1 || true)"
+  if [[ -n "$gname" ]]; then
+    exec runuser -u "#${OPENCODE_UID}" -g "$gname" -- "$0" "$@"
+  fi
+  exec runuser -u "#${OPENCODE_UID}" -- "$0" "$@"
 fi
 
 # --- runtime user (OPENCODE_UID) from here -----------------------------------

@@ -68,6 +68,9 @@ ensure_host_uid_gid() {
     return
   fi
   preflight_record ok "OPENCODE_UID/GID = ${resolved}"
+  local apps
+  apps="$(ensure_opencode_host_paths)"
+  preflight_record ok "OPENCODE_APPS_DIR = ${apps}"
 }
 
 check_required_env() {
@@ -77,7 +80,13 @@ check_required_env() {
   load_env || return
   local pass="${OPENCODE_SERVER_PASSWORD:-}"
   if [[ -z "$pass" || "$pass" == "change-me" ]]; then
-    preflight_record fail "OPENCODE_SERVER_PASSWORD not set or still change-me" "edit .env"
+    if [[ -n "${INFISICAL_PROJECT_ID:-}" && -n "${INFISICAL_CLIENT_ID:-}${INFISICAL_TOKEN:-}" ]]; then
+      preflight_record warn \
+        "OPENCODE_SERVER_PASSWORD not on host .env (expected with Infisical)" \
+        "health auth may fail here; password is injected inside the container"
+    else
+      preflight_record fail "OPENCODE_SERVER_PASSWORD not set or still change-me" "edit .env"
+    fi
   else
     preflight_record ok "OPENCODE_SERVER_PASSWORD configured"
   fi

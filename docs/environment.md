@@ -4,6 +4,17 @@
 
 **Supported start path:** [`./scripts/compose.sh`](../scripts/compose.sh) (wraps `infisical run -- docker compose …`). Prefer that over bare `docker compose` so Compose interpolation (e.g. `TWINGATE_*`) gets secrets from Infisical at start.
 
+### Host Infisical CLI
+
+Required for `./scripts/compose.sh`. Install once on the machine that runs Compose:
+
+| OS | Install |
+| -- | ------- |
+| macOS | `brew install infisical/get-cli/infisical` |
+| Ubuntu / Debian | `curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' \| sudo -E bash` then `sudo apt-get update && sudo apt-get install -y infisical` |
+
+Official docs: [Infisical CLI install](https://infisical.com/docs/cli/overview). Linux apt repos use `artifacts-cli.infisical.com` (not the old Cloudsmith URL).
+
 | Where | What |
 | ----- | ---- |
 | Host `.env` | Infisical bootstrap (`INFISICAL_*`) + non-secret local config (paths, ports, `COMPOSE_PROFILES`, `OPENCODE_UID`/`GID`) |

@@ -29,8 +29,22 @@ Secrets (`TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, API keys, etc.) live in **Inf
 
 3. Install the Infisical CLI on the host (once), then build and start via the wrapper:
 
+**macOS**
+
 ```bash
-brew install infisical/get-cli/infisical   # if needed
+brew install infisical/get-cli/infisical
+```
+
+**Ubuntu / Debian** ([Infisical CLI install](https://infisical.com/docs/cli/overview))
+
+```bash
+curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | sudo -E bash
+sudo apt-get update && sudo apt-get install -y infisical
+```
+
+Then:
+
+```bash
 ./scripts/compose.sh up -d --build
 ```
 

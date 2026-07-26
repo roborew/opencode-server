@@ -26,7 +26,10 @@ Examples:
   ./scripts/compose.sh down
 
 Requires:
-  - Host Infisical CLI (brew install infisical/get-cli/infisical)
+  - Host Infisical CLI
+      macOS:  brew install infisical/get-cli/infisical
+      Ubuntu: curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | sudo -E bash
+              sudo apt-get update && sudo apt-get install -y infisical
   - .env with INFISICAL_PROJECT_ID, INFISICAL_ENV, INFISICAL_DOMAIN or
     INFISICAL_API_URL, and INFISICAL_CLIENT_ID+SECRET (or INFISICAL_TOKEN)
 EOF
@@ -57,12 +60,15 @@ ensure_opencode_uid_gid >/dev/null || {
   echo "compose.sh: could not resolve OPENCODE_UID/GID" >&2
   exit 1
 }
-# Reload so compose process sees upserted UID/GID from .env.
+ensure_opencode_host_paths >/dev/null || true
+# Reload so compose process sees upserted UID/GID/paths from .env.
 load_env || true
 
 if ! command -v infisical >/dev/null 2>&1; then
   echo "compose.sh: Infisical CLI not found on PATH." >&2
-  echo "  Install: brew install infisical/get-cli/infisical" >&2
+  echo "  macOS:  brew install infisical/get-cli/infisical" >&2
+  echo "  Ubuntu: curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | sudo -E bash" >&2
+  echo "          sudo apt-get update && sudo apt-get install -y infisical" >&2
   exit 1
 fi
 

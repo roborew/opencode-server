@@ -120,6 +120,30 @@ ensure_opencode_uid_gid() {
   echo "${uid}:${gid} (${source})"
 }
 
+# Ensure OPENCODE_APPS_DIR / OPENCODE_WORKTREES_DIR exist in .env (compose +
+# preflight need absolute host paths). Defaults match docker-compose.yml.
+ensure_opencode_host_paths() {
+  local apps="${OPENCODE_APPS_DIR:-}"
+  local wt="${OPENCODE_WORKTREES_DIR:-}"
+
+  if [[ -z "$apps" ]]; then
+    apps="${HOME}/projects"
+  fi
+  if [[ -z "$wt" ]]; then
+    wt="${HOME}/.local/share/opencode/worktree"
+  fi
+
+  export OPENCODE_APPS_DIR="$apps"
+  export OPENCODE_WORKTREES_DIR="$wt"
+  export WORKSPACE_ROOT="$apps"
+
+  if [[ -f "${REPO_ROOT}/.env" ]]; then
+    upsert_env_key OPENCODE_APPS_DIR "$apps" "Host paths (auto-filled by setup/compose)"
+    upsert_env_key OPENCODE_WORKTREES_DIR "$wt"
+  fi
+  echo "${apps}"
+}
+
 opencode_base_url() {
   local host="${OPENCODE_HOST:-}"
   if [[ -z "$host" ]]; then
