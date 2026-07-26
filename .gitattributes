@@ -1,0 +1,33 @@
+# Enforce LF line endings for source files to prevent the
+# `bash\r` shebang failure (CRLF scripts in the Docker image).
+#
+# `* text=auto` lets Git pick per-binary on unlisted files.
+# Explicit `text eol=lf` overrides for files we author.
+
+* text=auto
+
+# Shell + Python run inside the OpenCode container
+*.sh text eol=lf
+*.bash text eol=lf
+*.py text eol=lf
+
+# Build / compose / config
+Dockerfile text eol=lf
+docker-compose*.yml text eol=lf
+docker-compose*.yaml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+.env* text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+Makefile text eol=lf
+
+# Docs + overrides
+*.md text eol=lf
+*.json text eol=lf
+
+# JS plugins
+*.js text eol=lf
+*.cjs text eol=lf
+*.mjs text eol=lf
+*.ts text eol=lf
