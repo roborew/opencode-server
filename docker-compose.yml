@@ -9,14 +9,14 @@ services:
         OPENCODE_GID: ${OPENCODE_GID:-1000}
     container_name: opencode-server
     restart: unless-stopped
-    # Run as the host user so the agent can read/write bind mounts without
-    # permission issues and host git doesn't treat the repo as foreign-owned.
-    # Default 1000:1000 matches most Linux hosts (robin on Ubuntu). macOS users
-    # set OPENCODE_UID=501 OPENCODE_GID=20 in .env to match their host user.
-    user: "${OPENCODE_UID:-1000}:${OPENCODE_GID:-1000}"
+    # Entrypoint starts as root, chowns volumes, then drops to OPENCODE_UID:GID
+    # (host user). setup/preflight auto-fills these from `id -u`/`id -g` (or
+    # OPENCODE_USERNAME). Do not set compose `user:` — that blocks the drop.
     env_file:
       - .env
     environment:
+      OPENCODE_UID: ${OPENCODE_UID:-1000}
+      OPENCODE_GID: ${OPENCODE_GID:-1000}
       OPENCODE_CONFIG_DIR: /home/opencode/.config/opencode
       OPENCODE_OVERRIDE: /home/opencode/overrides/opencode.server.json
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD}

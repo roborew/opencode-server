@@ -55,6 +55,71 @@ load_env() {
   return 0
 }
 
+# Upsert KEY=VALUE in REPO_ROOT/.env. Optional 3rd arg is a comment header when
+# appending a new key (macOS/GNU sed -i portability avoided via awk).
+upsert_env_key() {
+  local key="$1"
+  local value="$2"
+  local new_section_comment="${3:-}"
+  local env_file="${REPO_ROOT}/.env"
+  local tmp
+  touch "$env_file"
+  tmp="$(mktemp)"
+  if grep -qE "^${key}=" "$env_file" 2>/dev/null; then
+    awk -v k="$key" -v v="$value" '
+      BEGIN { done=0 }
+      $0 ~ "^" k "=" {
+        if (!done) { print k "=" v; done=1; next }
+      }
+      { print }
+      END { if (!done) print k "=" v }
+    ' "$env_file" >"$tmp"
+    mv "$tmp" "$env_file"
+  else
+    rm -f "$tmp"
+    if [[ -n "$new_section_comment" ]]; then
+      printf '\n# %s\n%s=%s\n' "$new_section_comment" "$key" "$value" >>"$env_file"
+    else
+      printf '\n%s=%s\n' "$key" "$value" >>"$env_file"
+    fi
+  fi
+}
+
+# Resolve host UID/GID for the opencode container and upsert into .env.
+# Order: explicit numeric OPENCODE_UID+GID → OPENCODE_USERNAME → current user.
+# Prints "uid:gid (source)" on stdout; returns 0 on success.
+ensure_opencode_uid_gid() {
+  local uid gid source name
+  local existing_uid="${OPENCODE_UID:-}"
+  local existing_gid="${OPENCODE_GID:-}"
+
+  if [[ "$existing_uid" =~ ^[0-9]+$ && "$existing_gid" =~ ^[0-9]+$ ]]; then
+    uid="$existing_uid"
+    gid="$existing_gid"
+    source="explicit"
+  elif [[ -n "${OPENCODE_USERNAME:-}" ]]; then
+    name="${OPENCODE_USERNAME}"
+    if ! uid="$(id -u "$name" 2>/dev/null)" || ! gid="$(id -g "$name" 2>/dev/null)"; then
+      echo "ensure_opencode_uid_gid: unknown OPENCODE_USERNAME=${name}" >&2
+      return 1
+    fi
+    source="user ${name}"
+  else
+    uid="$(id -u)"
+    gid="$(id -g)"
+    name="$(id -un)"
+    source="user ${name}"
+  fi
+
+  export OPENCODE_UID="$uid"
+  export OPENCODE_GID="$gid"
+  if [[ -f "${REPO_ROOT}/.env" ]]; then
+    upsert_env_key OPENCODE_UID "$uid" "Runtime UID/GID (auto-filled by setup/preflight)"
+    upsert_env_key OPENCODE_GID "$gid"
+  fi
+  echo "${uid}:${gid} (${source})"
+}
+
 opencode_base_url() {
   local host="${OPENCODE_HOST:-}"
   if [[ -z "$host" ]]; then

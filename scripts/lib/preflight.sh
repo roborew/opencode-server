@@ -22,6 +22,7 @@ run_preflight() {
   echo "Preflight"
 
   check_env_file
+  ensure_host_uid_gid
   check_required_env
   check_optional_env
   check_sandbox
@@ -52,6 +53,21 @@ check_env_file() {
   else
     preflight_record fail ".env missing" "cp .env.example .env"
   fi
+}
+
+# Auto-fill OPENCODE_UID/GID from the host user (or OPENCODE_USERNAME).
+ensure_host_uid_gid() {
+  if [[ ! -f "${REPO_ROOT}/.env" ]]; then
+    return
+  fi
+  load_env 2>/dev/null || true
+  local resolved
+  if ! resolved="$(ensure_opencode_uid_gid)"; then
+    preflight_record fail "Could not resolve OPENCODE_UID/GID" \
+      "set OPENCODE_UID/OPENCODE_GID or a valid OPENCODE_USERNAME in .env"
+    return
+  fi
+  preflight_record ok "OPENCODE_UID/GID = ${resolved}"
 }
 
 check_required_env() {

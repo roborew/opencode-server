@@ -10,31 +10,6 @@ source "${SCRIPT_LIB_DIR}/opencode-api.sh"
 SANDBOX_COMPOSE_FILE="docker-compose.sandbox.yml"
 SANDBOX_COMPOSE_PAIR="docker-compose.yml:${SANDBOX_COMPOSE_FILE}"
 
-# Upsert KEY=VALUE in REPO_ROOT/.env (creates file section if needed).
-upsert_env_key() {
-  local key="$1"
-  local value="$2"
-  local env_file="${REPO_ROOT}/.env"
-  local tmp
-  touch "$env_file"
-  tmp="$(mktemp)"
-  if grep -qE "^${key}=" "$env_file" 2>/dev/null; then
-    # Avoid sed -i portability issues (macOS vs GNU).
-    awk -v k="$key" -v v="$value" '
-      BEGIN { done=0 }
-      $0 ~ "^" k "=" {
-        if (!done) { print k "=" v; done=1; next }
-      }
-      { print }
-      END { if (!done) print k "=" v }
-    ' "$env_file" >"$tmp"
-    mv "$tmp" "$env_file"
-  else
-    rm -f "$tmp"
-    printf '\n# Sysbox sibling sandboxes (optional)\n%s=%s\n' "$key" "$value" >>"$env_file"
-  fi
-}
-
 # True if host Docker advertises sysbox-runc.
 host_has_sysbox_runtime() {
   command -v docker >/dev/null 2>&1 || return 1
@@ -95,7 +70,7 @@ _strip_sandbox_from_compose_file() {
 }
 
 _enable_sandbox_compose() {
-  upsert_env_key "OPENCODE_SANDBOX_ENABLED" "1"
+  upsert_env_key "OPENCODE_SANDBOX_ENABLED" "1" "Sysbox sibling sandboxes (optional)"
   upsert_env_key "COMPOSE_FILE" "$SANDBOX_COMPOSE_PAIR"
   if [[ -z "${OPENCODE_SANDBOX_IMAGE:-}" ]]; then
     upsert_env_key "OPENCODE_SANDBOX_IMAGE" "opencode-sandbox:local"

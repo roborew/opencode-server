@@ -8,6 +8,8 @@ All runtime secrets go in `.env` (gitignored). Compose loads it via `env_file: .
 | -------- | ------- |
 | `OPENCODE_SERVER_PASSWORD` | HTTP basic auth for the server |
 | `OPENCODE_SERVER_USERNAME` | Basic auth username (default `opencode`) |
+| `OPENCODE_UID`, `OPENCODE_GID` | Host UID/GID the container drops to after startup (bind-mount file ownership). setup/preflight auto-fills from the logged-in user; leave unset unless you need a pin |
+| `OPENCODE_USERNAME` | Optional host username; setup resolves UID/GID via `id -u`/`id -g` when numeric IDs are unset |
 | `TWINGATE_*` | Connector credentials |
 | `OPENAI_API_KEY` | Claude Context embeddings |
 | `OPENROUTER_API_KEY` | Model provider (if not in persisted auth volume) |

@@ -1,34 +1,35 @@
 #!/usr/bin/env bash
-# Runtime entrypoint. Runs as compose's `user:` (1000:1000 on Linux, 501:20 on
-# macOS, etc). The container is *not* USER-root — only the few operations that
-# actually need root (Infisical login writes to /root/.infisical, fixing stale
-# volume ownership, binding low ports) elevate via `runuser -u root -- cmd`
-# and immediately return to the runtime uid. This is the standard Docker USER
-# pattern from the Docker blog post on the USER instruction.
+# Root-first entrypoint: chown volumes to OPENCODE_UID:GID, then drop privileges
+# and run the rest as the host user (bind-mount parity on Mac/Linux).
 set -euo pipefail
 
+OPENCODE_UID="${OPENCODE_UID:-1000}"
+OPENCODE_GID="${OPENCODE_GID:-1000}"
+
+# --- root phase: fix ownership, then re-exec as the runtime user -------------
+if [[ "$(id -u)" -eq 0 ]]; then
+  fix_as_root() {
+    local path="$1"
+    mkdir -p "$path" 2>/dev/null || true
+    [[ -e "$path" ]] || return 0
+    chown -R "${OPENCODE_UID}:${OPENCODE_GID}" "$path" 2>/dev/null || true
+  }
+  fix_as_root /var/lib/opencode-data
+  fix_as_root /var/opencode-xdg
+  if [[ -n "${OPENCODE_WORKTREES_DIR:-}" ]]; then
+    fix_as_root "${OPENCODE_WORKTREES_DIR}"
+  fi
+  fix_as_root /home/opencode
+  echo "opencode-entrypoint: dropping to uid=${OPENCODE_UID} gid=${OPENCODE_GID}" >&2
+  exec runuser -u "#${OPENCODE_UID}" -g "#${OPENCODE_GID}" -- "$0" "$@"
+fi
+
+# --- runtime user (OPENCODE_UID) from here -----------------------------------
 export OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-/home/opencode/.config/opencode}"
 export OPENCODE_OVERRIDE="${OPENCODE_OVERRIDE:-/home/opencode/overrides/opencode.server.json}"
 export MILVUS_ADDRESS="${MILVUS_ADDRESS:-http://milvus-standalone:19530}"
 export PATH="/home/opencode/.config/opencode/bin:/home/opencode/.opencode/bin:/home/opencode/.local/bin:${PATH}"
 export HOME="/home/opencode"
-
-# Re-fix ownership of stale data dirs as root, then return here. Named volumes
-# and bind mounts may have been left root-owned by a previous sysbox sibling
-# or by the build (which baked /var/lib/opencode-data as the build-time uid).
-# Runs as root because chown only works for root. The runtime user then owns
-# the dirs after this step.
-fix_volume_ownership() {
-  local path="$1"
-  [[ -e "$path" ]] || return 0
-  runuser -u root -- chown -R "$(id -u):$(id -g)" "$path" 2>/dev/null || true
-}
-fix_volume_ownership /var/lib/opencode-data
-fix_volume_ownership /var/opencode-xdg
-if [[ -n "${OPENCODE_WORKTREES_DIR:-}" && -d "${OPENCODE_WORKTREES_DIR}" ]]; then
-  fix_volume_ownership "${OPENCODE_WORKTREES_DIR}"
-fi
-fix_volume_ownership /home/opencode
 
 # Keep XDG inside the container (/var/opencode-xdg) so Docker MCP/sessions never
 # share ~/.local/share/opencode with Desktop (that collision breaks claude-context).
@@ -151,10 +152,8 @@ if [[ -n "${CODERABBIT_API_KEY:-}" ]]; then
   coderabbit auth login --api-key "${CODERABBIT_API_KEY}" 2>/dev/null || true
 fi
 
-# MCP OAuth listens on *********:19876 inside the container. Host browsers (and
+# MCP OAuth listens on 127.0.0.1:19876 inside the container. Host browsers (and
 # SSH -L tunnels) hit the published eth0 port, so bridge eth IP → loopback.
-# Binding the eth IP requires CAP_NET_BIND_SERVICE equivalent — but binding
-# to non-loopback doesn't, so this works as the runtime user.
 start_oauth_callback_proxy() {
   local port="${OPENCODE_OAUTH_CALLBACK_PORT:-19876}"
   local eth_ip
@@ -167,9 +166,9 @@ start_oauth_callback_proxy() {
     echo "opencode-entrypoint: warn: socat missing; MCP OAuth host callback proxy disabled" >&2
     return 0
   fi
-  setsid socat "TCP-LISTEN:${port},bind=${eth_ip},fork,reuseaddr" "TCP:*********:${port}" \
+  setsid socat "TCP-LISTEN:${port},bind=${eth_ip},fork,reuseaddr" "TCP:127.0.0.1:${port}" \
     >/dev/null 2>&1 &
-  echo "opencode-entrypoint: MCP OAuth callback proxy ${eth_ip}:${port} → *********:${port}" >&2
+  echo "opencode-entrypoint: MCP OAuth callback proxy ${eth_ip}:${port} → 127.0.0.1:${port}" >&2
 }
 
 start_oauth_callback_proxy
@@ -216,19 +215,15 @@ if [[ -z "$token" ]]; then
   client_id="${INFISICAL_CLIENT_ID:-${INFISICAL_UNIVERSAL_AUTH_CLIENT_ID:-}}"
   client_secret="${INFISICAL_CLIENT_SECRET:-${INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET:-}}"
   if [[ -n "$client_id" && -n "$client_secret" ]]; then
-    # Infisical writes its session token to /root/.infisical — elevate briefly
-    # to write it (so the file is in a location the runtime user could never
-    # touch), then read the token and drop back. This keeps the runtime
-    # process unprivileged per the Docker USER best practices.
+    # Login as the runtime user; session lands under HOME=/home/opencode.
     token="$(
-      runuser -u root -- env HOME=/root \
-        infisical login \
-          --method=universal-auth \
-          --client-id="$client_id" \
-          --client-secret="$client_secret" \
-          --domain="$domain" \
-          --silent \
-          --plain
+      infisical login \
+        --method=universal-auth \
+        --client-id="$client_id" \
+        --client-secret="$client_secret" \
+        --domain="$domain" \
+        --silent \
+        --plain
     )" || {
       echo "opencode-entrypoint: infisical universal-auth login failed" >&2
       exit 1

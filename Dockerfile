@@ -7,18 +7,21 @@ ARG CONFIG_REF=main
 ARG INFISICAL_CLI_VERSION=0.43.84
 # mikefarah/yq v4 — PRD frontmatter, registry/label sync, legacy slices fanout
 ARG YQ_VERSION=v4.53.2
+# Build-time uid/gid for COPY --chown and a stable `opencode` passwd entry.
+# Runtime identity comes from OPENCODE_UID/GID via the entrypoint drop (may
+# differ on macOS, e.g. 501:20).
+ARG OPENCODE_UID=1000
+ARG OPENCODE_GID=1000
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/opencode
 ENV PATH="/home/opencode/.opencode/bin:/home/opencode/.local/bin:${PATH}"
 ENV INFISICAL_DISABLE_UPDATE_CHECK=true
 
-# Non-root runtime user. Always create a dedicated `opencode` user/group so
-# COPY --chown=opencode:opencode and the entrypoint's chown step have a stable
-# name to target. --non-unique / -o lets useradd/groupadd succeed even when the
-# requested uid/gid collides with the base image (Ubuntu 24.04 ships `ubuntu`
-# at 1000:1000). The runtime uid/gid is then re-applied by the entrypoint on
-# first boot to match the host user (via compose's `user:` directive).
+# Dedicated `opencode` user/group for COPY --chown. --non-unique / -o lets
+# useradd/groupadd succeed when the requested uid/gid collides with the base
+# image (Ubuntu 24.04 ships `ubuntu` at 1000:1000). Runtime drops to the host
+# uid/gid in the entrypoint after chowning volumes.
 RUN if ! getent group opencode >/dev/null ; then \
       groupadd -o -g "${OPENCODE_GID}" opencode || groupadd opencode ; \
     fi ; \
@@ -124,29 +127,25 @@ RUN git clone --depth 1 --branch "${CONFIG_REF}" "${CONFIG_REPO}" /home/opencode
 COPY --chown=opencode:opencode overrides/ /home/opencode/overrides/
 COPY --chown=opencode:opencode docker/plugins/ /home/opencode/overrides/plugins/
 COPY docker/entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
-COPY docker/entrypoint-user.sh /usr/local/bin/opencode-entrypoint-user.sh
 COPY docker/configure-git-identity.sh /usr/local/bin/configure-git-identity.sh
 COPY docker/merge-config.py /usr/local/bin/merge-config.py
 COPY docker/rewrite-worktree-gitdirs.py /usr/local/bin/rewrite-worktree-gitdirs.py
 COPY docker/worktree-delete-guard.py /usr/local/bin/worktree-delete-guard.py
 COPY docker/opencode-serve-guarded.sh /usr/local/bin/opencode-serve-guarded.sh
 COPY --chown=opencode:opencode scripts/sandbox/sandbox /usr/local/bin/sandbox
-RUN chmod +x /usr/local/bin/opencode-entrypoint.sh /usr/local/bin/opencode-entrypoint-user.sh \
+RUN chmod +x /usr/local/bin/opencode-entrypoint.sh \
     /usr/local/bin/configure-git-identity.sh \
     /usr/local/bin/merge-config.py \
     /usr/local/bin/rewrite-worktree-gitdirs.py /usr/local/bin/worktree-delete-guard.py \
     /usr/local/bin/opencode-serve-guarded.sh \
     /usr/local/bin/sandbox
 
-# Runtime data dirs are NOT baked into the image — the runtime uid owns them
-# and may differ from the build-time uid (host 1000 vs base-image ubuntu 1000
-# vs macOS 501). The entrypoint creates them with the correct ownership on
-# every boot, so any stale state from a previous container is overwritten.
+# Runtime data dirs are NOT baked into the image — the entrypoint (as root)
+# chowns them to OPENCODE_UID:GID then drops privileges before serve.
 
 EXPOSE 4097 19876
 
-# Runs as compose's `user:` (typically 1000:1000 on Linux, 501:20 on macOS).
-# The entrypoint elevates to root only for the bits that need it (Infisical
-# login writes to /root/.infisical; chown fixes), then drops back via runuser.
+# Starts as root (no Dockerfile USER / compose user:). Entrypoint chowns
+# volumes then runuser-drops to OPENCODE_UID:OPENCODE_GID (host user).
 ENTRYPOINT ["/usr/local/bin/opencode-entrypoint.sh"]
-CMD ["opencode", "serve", "--hostname", "*******", "--port", "4097"]
+CMD ["opencode", "serve", "--hostname", "0.0.0.0", "--port", "4097"]

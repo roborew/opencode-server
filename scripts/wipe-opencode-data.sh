@@ -38,6 +38,7 @@ EOF
 done
 
 load_env || true
+ensure_opencode_uid_gid >/dev/null || true
 
 echo "This removes Docker volume opencode-server_opencode-data (server DB/auth)."
 echo "OPENCODE_APPS_DIR repos and worktrees are NOT deleted."
