@@ -120,6 +120,18 @@ classify_repo_env() {
   echo "missing_infisical"
 }
 
+write_repo_env_skeleton() {
+  local target="$1"
+  install -m 0600 /dev/null "$target"
+  cat >"$target" <<'EOF'
+INFISICAL_API_URL=
+INFISICAL_CLIENT_ID=
+INFISICAL_CLIENT_SECRET=
+INFISICAL_ENV=
+INFISICAL_PROJECT_ID=
+EOF
+}
+
 # Read multi-line paste until a line that is only "." or EOF.
 # Writes to target path with mode 0600. Does not echo contents.
 read_env_paste_to_file() {
@@ -146,7 +158,7 @@ read_env_paste_to_file() {
   return 0
 }
 
-# Interactive: ensure .env for one repo. YES=1 skips create prompt (still needs paste if creating).
+# Ensure .env for one repo (auto-creates a placeholder file when missing).
 ensure_repo_env_interactive() {
   local repo="$1"
   local yes="${2:-0}"
@@ -172,30 +184,9 @@ ensure_repo_env_interactive() {
         echo "    Fix: sudo chown -R \"$(id -un):$(id -gn)\" \"${repo}\"" >&2
         return 0
       fi
-      local answer="n"
-      if [[ "$yes" == "1" ]]; then
-        answer="y"
-      elif [[ -t 0 ]]; then
-        read -r -p "    Create .env for ${name} and paste vars now? [y/N] " answer
-      fi
-      if [[ "$answer" =~ ^[Yy]$ ]]; then
-        if ! [[ -t 0 ]]; then
-          echo "    Non-interactive: cannot paste — create ${repo}/.env manually." >&2
-          return 1
-        fi
-        touch "${repo}/.env"
-        chmod 0600 "${repo}/.env"
-        if read_env_paste_to_file "${repo}/.env"; then
-          status="$(classify_repo_env "$repo")"
-          if [[ "$status" == "ok" ]]; then
-            echo "  ${name}: .env ready"
-          else
-            echo "  ${name}: .env written; Infisical keys still incomplete (warn only)"
-          fi
-        fi
-      else
-        echo "    Skipped — sandbox builds for this repo need a .env"
-      fi
+      write_repo_env_skeleton "${repo}/.env"
+      echo "    Created ${repo}/.env with Infisical placeholders."
+      echo "    Fill INFISICAL_API_URL, INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET, INFISICAL_ENV, INFISICAL_PROJECT_ID."
       return 0
       ;;
   esac
@@ -213,7 +204,7 @@ ensure_repos_env() {
     return 0
   fi
   echo
-  echo "Per-repo .env for sandbox builds (no .env.example — paste or create manually):"
+  echo "Per-repo .env for sandbox builds (auto-creates placeholders when missing):"
   local skip_pat
   skip_pat="$(repo_env_skip_patterns)"
   if [[ -n "$skip_pat" ]]; then
@@ -227,17 +218,23 @@ ensure_repos_env() {
       echo "  $(basename "$r"): skipped (OPENCODE_REPO_ENV_SKIP)"
       continue
     fi
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      status="$(classify_repo_env "$r")"
+      echo "  [dry-run] $(basename "$r"): ${status}"
+      case "$status" in
+        ok) REPO_ENV_OK=$((REPO_ENV_OK + 1)) ;;
+        missing) REPO_ENV_MISSING=$((REPO_ENV_MISSING + 1)) ;;
+        missing_infisical) REPO_ENV_INFISICAL_WARN=$((REPO_ENV_INFISICAL_WARN + 1)) ;;
+      esac
+      continue
+    fi
+    ensure_repo_env_interactive "$r" "${YES:-0}"
     status="$(classify_repo_env "$r")"
     case "$status" in
       ok) REPO_ENV_OK=$((REPO_ENV_OK + 1)) ;;
       missing) REPO_ENV_MISSING=$((REPO_ENV_MISSING + 1)) ;;
       missing_infisical) REPO_ENV_INFISICAL_WARN=$((REPO_ENV_INFISICAL_WARN + 1)) ;;
     esac
-    if [[ "${DRY_RUN:-0}" == "1" ]]; then
-      echo "  [dry-run] $(basename "$r"): ${status}"
-      continue
-    fi
-    ensure_repo_env_interactive "$r" "${YES:-0}"
   done
   echo
   echo "Repo .env summary: ok=${REPO_ENV_OK} missing=${REPO_ENV_MISSING} infisical_incomplete=${REPO_ENV_INFISICAL_WARN} skipped=${REPO_ENV_SKIPPED}"

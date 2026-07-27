@@ -75,6 +75,7 @@ COMMAND=""
 PROJECT_MODE=""
 MCP_AUTH_SERVER=""
 AUTO_HOSTS_PREFLIGHT="${AUTO_HOSTS_PREFLIGHT:-1}"
+PREFLIGHT_HOSTS_PREPARED=0
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -223,10 +224,25 @@ docker_exec_git() {
   docker exec -u "${uid}:${gid}" "$CONTAINER_NAME" git -C "$dir" "$@"
 }
 
+docker_exec_user() {
+  local uid="${OPENCODE_UID:-}"
+  local gid="${OPENCODE_GID:-}"
+  if [[ ! "$uid" =~ ^[0-9]+$ || ! "$gid" =~ ^[0-9]+$ ]]; then
+    echo "docker_exec_user: OPENCODE_UID/GID not set — run compose.sh / preflight first" >&2
+    return 1
+  fi
+  docker exec -u "${uid}:${gid}" "$CONTAINER_NAME" "$@"
+}
+
 ensure_work_branch() {
   local dir="$1"
   local branch="${OPENCODE_WORK_BRANCH:-develop}"
   local current remote_ref="refs/remotes/origin/${branch}"
+
+  if ! docker_exec_git "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "  warning: cannot access repo as ${OPENCODE_UID}:${OPENCODE_GID} (ownership/permissions mismatch) — left unchanged" >&2
+    return 0
+  fi
 
   docker_exec_git "$dir" fetch --prune origin >/dev/null 2>&1 || true
 
@@ -337,9 +353,9 @@ for r in sorted(data, key=lambda x: x['name'].lower()):
       echo "Cloning ${name}..."
       # Prefer cloning straight onto the work branch when it exists remotely.
       # If -b fails (missing branch / partial dir), remove and clone default, then ensure.
-      if ! docker_exec gh repo clone "${GH_ORG}/${name}" "$target" -- -b "$work_branch" 2>/dev/null; then
-        docker_exec rm -rf "$target" 2>/dev/null || true
-        docker_exec gh repo clone "${GH_ORG}/${name}" "$target"
+      if ! docker_exec_user gh repo clone "${GH_ORG}/${name}" "$target" -- -b "$work_branch" 2>/dev/null; then
+        docker_exec_user rm -rf "$target" 2>/dev/null || true
+        docker_exec_user gh repo clone "${GH_ORG}/${name}" "$target"
       fi
       ensure_work_branch "$target"
     fi
@@ -466,7 +482,11 @@ sync_projects() {
     return
   fi
 
-  run_client_bootstrap ${desired[@]+"${desired[@]}"}
+  if [[ "${PREFLIGHT_HOSTS_PREPARED}" == "1" ]]; then
+    print_project_open_links "${desired[@]}"
+  else
+    run_client_bootstrap ${desired[@]+"${desired[@]}"}
+  fi
 }
 
 run_mcp_auth() {
@@ -530,6 +550,7 @@ prepare_hosts_for_preflight() {
   # Best-effort host mapping before preflight checks. Non-fatal in CI or
   # non-interactive shells where sudo prompts are not available.
   ensure_hosts_entry || true
+  PREFLIGHT_HOSTS_PREPARED=1
 }
 
 main() {
