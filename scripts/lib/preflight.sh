@@ -24,9 +24,9 @@ run_preflight() {
   check_env_file
   ensure_host_uid_gid
   check_required_env
-  check_optional_env
   check_sandbox
   check_container
+  check_optional_env
   check_opencode_health
   check_workspace_mount
   check_worktree_mount
@@ -37,6 +37,7 @@ run_preflight() {
   check_gh_auth
   check_coderabbit_auth
   check_providers
+  check_twingate_connector
   check_mcps
 
   if [[ "$PREFLIGHT_JSON_MODE" == "1" ]]; then
@@ -78,38 +79,38 @@ check_required_env() {
     return
   fi
   load_env || return
+  if [[ -n "${INFISICAL_PROJECT_ID:-}" && -n "${INFISICAL_CLIENT_ID:-}${INFISICAL_TOKEN:-}" ]]; then
+    preflight_record ok "Infisical bootstrap configured"
+    return
+  fi
   local pass="${OPENCODE_SERVER_PASSWORD:-}"
   if [[ -z "$pass" || "$pass" == "change-me" ]]; then
-    if [[ -n "${INFISICAL_PROJECT_ID:-}" && -n "${INFISICAL_CLIENT_ID:-}${INFISICAL_TOKEN:-}" ]]; then
-      preflight_record warn \
-        "OPENCODE_SERVER_PASSWORD not on host .env (expected with Infisical)" \
-        "health auth may fail here; password is injected inside the container"
-    else
-      preflight_record fail "OPENCODE_SERVER_PASSWORD not set or still change-me" "edit .env"
-    fi
+    preflight_record fail "OPENCODE_SERVER_PASSWORD not set or still change-me" \
+      "edit .env or configure INFISICAL_* bootstrap"
   else
     preflight_record ok "OPENCODE_SERVER_PASSWORD configured"
   fi
 }
 
+# Runtime secrets may come from host .env (compose env_file/environment) or
+# Infisical (compose.sh / entrypoint). Either way they must appear on PID 1.
 check_optional_env() {
-  load_env 2>/dev/null || return
+  if ! container_running; then
+    return
+  fi
   local -a missing=()
-  [[ -z "${OPENROUTER_API_KEY:-}" ]] && missing+=("OPENROUTER_API_KEY (model provider)")
-  [[ -z "${OPENAI_API_KEY:-}" ]] && missing+=("OPENAI_API_KEY (claude-context embeddings)")
-  [[ -z "${GH_TOKEN:-}" ]] && missing+=("GH_TOKEN (GitHub CLI)")
-  [[ -z "${CODERABBIT_API_KEY:-}" ]] && missing+=("CODERABBIT_API_KEY (CodeRabbit CLI)")
-  [[ -z "${GH_ORG:-}" ]] && missing+=("GH_ORG (org repo listing)")
-  [[ -z "${GIT_USER_NAME:-}${GIT_AUTHOR_NAME:-}" || -z "${GIT_USER_EMAIL:-}${GIT_AUTHOR_EMAIL:-}" ]] \
-    && missing+=("GIT_USER_NAME/GIT_USER_EMAIL (agent commit identity)")
-  [[ -z "${DOCS_MCP_URL:-}" ]] && missing+=("DOCS_MCP_URL (docs MCP)")
-  [[ -z "${TWINGATE_NETWORK:-}" ]] && missing+=("TWINGATE_* (remote access)")
+  local key val
+  for key in GH_TOKEN OPENCODE_SERVER_PASSWORD GIT_USER_NAME; do
+    val="$(container_env_get "$key")"
+    [[ -z "$val" ]] && missing+=("$key")
+  done
   if [[ ${#missing[@]} -gt 0 ]]; then
     for m in "${missing[@]}"; do
-      preflight_record warn "Optional: $m"
+      preflight_record warn "container missing ${m}" \
+        "set ${m} in .env or Infisical so the running container receives it"
     done
   else
-    preflight_record ok "Optional env vars present"
+    preflight_record ok "container env present (GH_TOKEN, password, GIT_USER_NAME)"
   fi
 }
 
@@ -470,17 +471,13 @@ check_gh_auth() {
   if ! container_running; then
     return
   fi
-  load_env 2>/dev/null || return
-  if [[ -z "${GH_TOKEN:-}" ]]; then
-    preflight_record warn "GH_TOKEN not set — gh auth skipped"
-    return
-  fi
+  load_env 2>/dev/null || true
   local status
   if status="$(docker_exec gh auth status 2>&1)"; then
-  :
+    :
   else
     preflight_record fail "gh auth failed" \
-      "set GH_TOKEN in .env (fine-grained PAT or classic with repo + read:org)"
+      "set a valid GH_TOKEN in .env or Infisical (fine-grained PAT or classic with repo + read:org)"
     return
   fi
 
@@ -504,18 +501,22 @@ check_gh_auth() {
     fi
   fi
 
-  if [[ -n "${GH_ORG:-}" ]]; then
-    if docker_exec gh api "orgs/${GH_ORG}" >/dev/null 2>&1; then
-      preflight_record ok "gh org access: ${GH_ORG}"
+  local gh_org="${GH_ORG:-}"
+  if [[ -z "$gh_org" ]]; then
+    gh_org="$(container_env_get GH_ORG)"
+  fi
+  if [[ -n "$gh_org" ]]; then
+    if docker_exec gh api "orgs/${gh_org}" >/dev/null 2>&1; then
+      preflight_record ok "gh org access: ${gh_org}"
     else
-      preflight_record fail "cannot access org ${GH_ORG}" \
+      preflight_record fail "cannot access org ${gh_org}" \
         "check GH_ORG, token resource owner, and org Members: Read"
       return
     fi
-    if docker_exec gh api "orgs/${GH_ORG}/repos?per_page=1" >/dev/null 2>&1; then
-      preflight_record ok "gh org repo list: ${GH_ORG}"
+    if docker_exec gh api "orgs/${gh_org}/repos?per_page=1" >/dev/null 2>&1; then
+      preflight_record ok "gh org repo list: ${gh_org}"
     else
-      preflight_record fail "cannot list repos in ${GH_ORG}" \
+      preflight_record fail "cannot list repos in ${gh_org}" \
         "grant Contents (and Metadata) on the org's repositories"
     fi
   fi
@@ -525,16 +526,11 @@ check_coderabbit_auth() {
   if ! container_running; then
     return
   fi
-  load_env 2>/dev/null || return
-  if [[ -z "${CODERABBIT_API_KEY:-}" ]]; then
-    preflight_record warn "CODERABBIT_API_KEY not set — CodeRabbit CLI auth skipped"
-    return
-  fi
   if docker_exec coderabbit auth status >/dev/null 2>&1; then
     preflight_record ok "coderabbit auth (Agentic API key)"
   else
-    preflight_record fail "coderabbit auth failed" \
-      "set CODERABBIT_API_KEY in .env (Agentic key from CodeRabbit dashboard)"
+    preflight_record warn "coderabbit auth failed" \
+      "set CODERABBIT_API_KEY in .env or Infisical (Agentic key from CodeRabbit dashboard)"
   fi
 }
 
@@ -542,7 +538,6 @@ check_providers() {
   if ! container_running; then
     return
   fi
-  load_env 2>/dev/null || return
   local providers
   providers="$(list_providers_json 2>/dev/null || echo '{}')"
   local connected=0
@@ -554,12 +549,26 @@ c = d.get('connected', [])
 print(len(c) if isinstance(c, list) else 0)
 " 2>/dev/null || echo 0)"
   fi
-  if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
-    preflight_record ok "OPENROUTER_API_KEY set in env"
-  elif [[ "$connected" -gt 0 ]]; then
+  if [[ "$connected" -gt 0 ]]; then
     preflight_record ok "provider(s) connected (${connected})"
   else
-    preflight_record warn "no provider auth detected" "set OPENROUTER_API_KEY or connect via server UI"
+    preflight_record warn "no provider auth detected" \
+      "set OPENROUTER_API_KEY in .env or Infisical, or connect via server UI"
+  fi
+}
+
+check_twingate_connector() {
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx twingate-connector; then
+    local network=""
+    network="$(container_env_get TWINGATE_NETWORK twingate-connector)" || network=""
+    if [[ -n "$network" ]]; then
+      preflight_record ok "twingate-connector running (network=${network})"
+    else
+      preflight_record ok "twingate-connector running"
+    fi
+  else
+    preflight_record warn "twingate-connector not running" \
+      "remote access off — start via ./scripts/compose.sh if needed"
   fi
 }
 
@@ -630,29 +639,32 @@ for name, info in sorted(data.items()):
 check_docs_mcp_reachability() {
   local status="$1"
   local name="$2"
-  load_env 2>/dev/null || return
-  local url="${DOCS_MCP_URL:-}"
+  local url
+  url="$(container_env_get DOCS_MCP_URL)"
   if [[ -z "$url" ]]; then
-    preflight_record warn "mcp/${name}: ${status} (DOCS_MCP_URL not set)"
+    preflight_record warn "mcp/${name}: ${status} (docs MCP URL not configured in container)" \
+      "set DOCS_MCP_URL in .env or Infisical"
     return
   fi
   if docker_exec curl -sf --max-time 5 "$url" >/dev/null 2>&1; then
     preflight_record ok "mcp/${name}: reachable"
   else
-    preflight_record warn "DOCS_MCP_URL unreachable from container" "start docs MCP on host or fix URL (${url})"
+    preflight_record warn "docs MCP unreachable from container" \
+      "start docs MCP on host or fix URL (${url})"
   fi
 }
 
 check_claude_context() {
   local status="$1"
   local name="$2"
-  load_env 2>/dev/null || return
-  if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-    preflight_record warn "mcp/${name}: OPENAI_API_KEY not set"
+  local openai_key
+  openai_key="$(container_env_get OPENAI_API_KEY)"
+  if [[ -z "$openai_key" ]]; then
+    preflight_record warn "mcp/${name}: OPENAI_API_KEY not set in container"
   elif [[ "$status" =~ ^(connected|ready|ok)$ ]]; then
     preflight_record ok "mcp/${name}: ${status}"
   else
-    preflight_record warn "mcp/${name}: ${status} (check OPENAI_API_KEY and Milvus)"
+    preflight_record warn "mcp/${name}: ${status} (check OPENAI_API_KEY in .env or Infisical, and Milvus)"
   fi
 }
 

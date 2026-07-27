@@ -242,6 +242,24 @@ container_running() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER_NAME"
 }
 
+# Read KEY from PID 1 environ inside a container (runtime secrets — .env and/or Infisical).
+# Must run as PID 1's uid: container root lacks CAP_SYS_PTRACE, so /proc/*/environ
+# of another uid returns EACCES even for uid 0.
+container_env_get() {
+  local key="$1"
+  local cname="${2:-$CONTAINER_NAME}"
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$cname"; then
+    return 0
+  fi
+  local uid
+  uid="$(docker exec "$cname" stat -c '%u' /proc/1 2>/dev/null || true)"
+  if [[ -z "$uid" ]]; then
+    return 0
+  fi
+  docker exec -u "$uid" "$cname" sh -c \
+    "tr '\\0' '\\n' < /proc/1/environ 2>/dev/null | sed -n 's/^${key}=//p' | head -1"
+}
+
 docker_exec() {
   docker exec "$CONTAINER_NAME" "$@"
 }

@@ -50,9 +50,18 @@ Do **not** bake secrets into the Docker image. Do **not** permanently `infisical
 
 See [`.env.example`](../.env.example) for the full template, including sandbox and Infisical keys.
 
-### Preflight vs Infisical-only host `.env`
+### Preflight (container runtime env)
 
-Host preflight reads **host** `.env`. If `OPENCODE_SERVER_PASSWORD` exists only in Infisical, the password / health-auth check may fail even when the container is fine (entrypoint injects the password inside). Prefer verifying with container logs or an authenticated curl using the Infisical password, or keep a host copy of that one value for preflight.
+Preflight does **not** look for secrets on the host or inside the image layers. Secrets are never baked into the image at build time.
+
+It checks that required values are present on the **running container’s main process** (`/proc/1/environ`), regardless of how they got there:
+
+| Source | How they reach the container |
+| ------ | ---------------------------- |
+| Host `.env` | Compose `env_file` / `environment:` at `docker compose up` |
+| Infisical | `./scripts/compose.sh` (compose interpolation) and/or entrypoint `infisical run` |
+
+Host `.env` is still used for bootstrap (`INFISICAL_*`) and non-secret local config (paths, ports, UID/GID). Password correctness is checked via health.
 
 ## Deployed environments (Infisical)
 
