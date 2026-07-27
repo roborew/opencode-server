@@ -160,9 +160,11 @@ check_sandbox() {
           "sandbox enabled but docker.sock not in container" \
           "docker compose up -d  # with COMPOSE_FILE including docker-compose.sandbox.yml"
       fi
-      if docker exec "$CONTAINER_NAME" command -v sandbox >/dev/null 2>&1; then
+      # docker exec doesn't inherit the entrypoint's PATH, so use the absolute
+      # path the Dockerfile installs the CLI at.
+      if docker exec "$CONTAINER_NAME" test -x /usr/local/bin/sandbox 2>/dev/null; then
         local probe
-        if probe="$(docker exec -e OPENCODE_SANDBOX_ENABLED=1 "$CONTAINER_NAME" sandbox probe 2>/dev/null)"; then
+        if probe="$(docker exec -e OPENCODE_SANDBOX_ENABLED=1 "$CONTAINER_NAME" /usr/local/bin/sandbox probe 2>/dev/null)"; then
           if echo "$probe" | grep -q '"available":true'; then
             preflight_record ok "sandbox probe available inside container"
           else
@@ -206,7 +208,7 @@ check_repo_envs() {
   if [[ "$enabled" != "1" && "$mode" != "on" ]]; then
     return
   fi
-  local missing=0 incomplete=0 ok=0 scanned=0 skipped=0
+  local needs_paste=0 ok=0 scanned=0 skipped=0
   local root status
   while IFS= read -r root; do
     [[ -n "$root" ]] || continue
@@ -219,8 +221,7 @@ check_repo_envs() {
     status="$(classify_repo_env "$root")"
     case "$status" in
       ok) ok=$((ok + 1)) ;;
-      missing) missing=$((missing + 1)) ;;
-      missing_infisical) incomplete=$((incomplete + 1)) ;;
+      needs_paste) needs_paste=$((needs_paste + 1)) ;;
     esac
   done < <(find "$WORKSPACE_ROOT" -maxdepth 3 -name .git -type d -prune 2>/dev/null | while read -r g; do dirname "$g"; done)
 
@@ -239,13 +240,13 @@ check_repo_envs() {
     fi
     return
   fi
-  if [[ "$missing" -eq 0 && "$incomplete" -eq 0 ]]; then
+  if [[ "$needs_paste" -eq 0 ]]; then
     preflight_record ok "repo .env: ${ok}/${scanned} ready for Infisical/sandbox builds${skip_note}"
     return
   fi
   preflight_record warn \
-    "repo .env: ok=${ok} missing=${missing} infisical_incomplete=${incomplete} (of ${scanned}${skip_note})" \
-    "./scripts/setup.sh projects local  # create .env + paste Infisical vars (no .env.example)"
+    "repo .env: ok=${ok} needs_paste=${needs_paste} (of ${scanned}${skip_note})" \
+    "./scripts/setup.sh projects local  # paste Infisical + repo vars into each .env (never auto-created)"
 }
 
 check_container() {

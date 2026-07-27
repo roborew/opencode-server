@@ -45,10 +45,26 @@ Do **not** bake secrets into the Docker image. Do **not** permanently `infisical
 | `OPENCODE_WORKTREES_DIR` | Host worktree dir ending in `/opencode/worktree` (default `~/.local/share/opencode/worktree`) |
 | `MILVUS_PUBLISH_PORT` | Host port for Milvus gRPC (empty = not published) |
 | `MILVUS_HEALTH_PUBLISH_PORT` | Host port for Milvus health endpoint |
-| `MINIO_API_PUBLISH_PORT` | Host port for MinIO API |
-| `MINIO_CONSOLE_PUBLISH_PORT` | Host port for MinIO console |
+| `MINIO_API_PUBLISH_PORT` | Host port for Minio API |
+| `MINIO_CONSOLE_PUBLISH_PORT` | Host port for Minio console |
 | `DOCKER_HOST_INTERNAL` | Hostname containers use to reach the Docker host (default `host.docker.internal`) |
 | `LOCALHOST_REWRITE` | Rewrite loopback URLs to `DOCKER_HOST_INTERNAL` before tools run (default `1`; set `0` to disable) |
+
+### Optional Sysbox sibling sandboxes (Ubuntu only)
+
+Single source of truth: store these in **Infisical** alongside `OPENCODE_APPS_DIR` so the running container sees them at compose start. Set them in host `.env` only as a local override when not using Infisical. See [docs/sandbox.md](sandbox.md) for the full setup flow.
+
+| Variable | Purpose |
+| -------- | ------- |
+| `OPENCODE_SANDBOX_MODE` | `off` (default) \| `auto` \| `on`. Off = Mac-safe; auto = probe + enable if Sysbox present; on = require Sysbox |
+| `OPENCODE_SANDBOX_ENABLED` | `0\|1`. Written by `./scripts/setup.sh` based on MODE — do not hand-edit |
+| `OPENCODE_SANDBOX_IMAGE` | Sysbox sibling image tag (default `opencode-sandbox:local`; build with `./scripts/sandbox/build-image.sh`) |
+| `OPENCODE_SANDBOX_RUNTIME` | OCI runtime for siblings (default `sysbox-runc`) |
+| `OPENCODE_SANDBOX_REVIEW_DNS` | `on\|off`; agent DNS upsert gate for review URLs (default `on`) |
+| `OPENCODE_SANDBOX_ROUTE_IMAGE` | Localhost publish helper image (default `alpine/socat:*******`) |
+| `OPENCODE_SANDBOX_TUNNEL_ID` | Existing host tunnel UUID (hint for agents) |
+
+When `OPENCODE_SANDBOX_ENABLED=1`, setup also sets `COMPOSE_FILE=docker-compose.yml:docker-compose.sandbox.yml` (the overlay mounts `/var/run/docker.sock` into the opencode container so the `sandbox` CLI can manage siblings).
 
 See [`.env.example`](../.env.example) for the full template, including sandbox and Infisical keys.
 

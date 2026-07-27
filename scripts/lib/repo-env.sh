@@ -89,12 +89,18 @@ env_has_key_nonempty() {
   return 1
 }
 
-# Classify repo .env: missing | ok | missing_infisical
+# Classify repo .env readiness for sandbox builds.
+#   ok           — file present, all required Infisical keys have non-empty values
+#   needs_paste  — file missing OR file present but required keys are empty/blank
+# This is the only classification setup.sh acts on: a missing or empty .env is
+# treated the same — the user must paste real values in. The script never
+# auto-creates a placeholder file; that would be misleading (a file with all
+# `KEY=` empty values looks like a config but isn't).
 classify_repo_env() {
   local repo="$1"
   local env_file="${repo}/.env"
   if [[ ! -f "$env_file" ]]; then
-    echo "missing"
+    echo "needs_paste"
     return
   fi
   local has_domain=0 has_project=0
@@ -115,21 +121,9 @@ classify_repo_env() {
     echo "ok"
     return
   fi
-  # .env exists but Infisical incomplete — still "present" for non-Infisical apps;
-  # report missing_infisical so setup can warn.
-  echo "missing_infisical"
-}
-
-write_repo_env_skeleton() {
-  local target="$1"
-  install -m 0600 /dev/null "$target"
-  cat >"$target" <<'EOF'
-INFISICAL_API_URL=
-INFISICAL_CLIENT_ID=
-INFISICAL_CLIENT_SECRET=
-INFISICAL_ENV=
-INFISICAL_PROJECT_ID=
-EOF
+  # File exists but required Infisical keys are missing or empty — still needs
+  # real values pasted in.
+  echo "needs_paste"
 }
 
 # Read multi-line paste until a line that is only "." or EOF.
@@ -158,10 +152,19 @@ read_env_paste_to_file() {
   return 0
 }
 
-# Ensure .env for one repo (auto-creates a placeholder file when missing).
+# True when interactive paste can be offered: TTY available and --yes not set.
+can_paste_interactively() {
+  [[ "${YES:-0}" == "1" ]] && return 1
+  [[ -t 0 && -t 1 ]]
+}
+
+# Ensure .env for one repo. When the file is missing or its required Infisical
+# keys are empty, prompt the user to paste the values in (never auto-create a
+# placeholder). In non-interactive mode (--yes, no TTY, non-writable repo) the
+# script reports and leaves the repo alone — the user can fill .env manually
+# or re-run interactively.
 ensure_repo_env_interactive() {
   local repo="$1"
-  local yes="${2:-0}"
   local name
   name="$(basename "$repo")"
   local status
@@ -172,39 +175,45 @@ ensure_repo_env_interactive() {
       echo "  ${name}: .env OK (Infisical keys present)"
       return 0
       ;;
-    missing_infisical)
-      echo "  ${name}: .env present but Infisical keys incomplete (sandbox builds may fail)"
-      echo "           need INFISICAL_PROJECT_ID, INFISICAL_DOMAIN|API_URL, and TOKEN or CLIENT_ID+SECRET"
-      return 0
-      ;;
-    missing)
-      echo "  ${name}: .env missing (sandbox compose builds blocked until created)"
+    needs_paste)
       if [[ ! -w "${repo}" ]]; then
-        echo "    Skipped — ${repo} is not writable as $(id -un) (owner: $(stat -c '%U:%G' "${repo}" 2>/dev/null || echo '?'))." >&2
-        echo "    Fix: sudo chown -R \"$(id -un):$(id -gn)\" \"${repo}\"" >&2
+        echo "  ${name}: .env ${status} — repo not writable as $(id -un) (owner: $(stat -c '%U:%G' "${repo}" 2>/dev/null || echo '?'))" >&2
+        echo "           fix: sudo chown -R \"$(id -un):$(id -gn)\" \"${repo}\"  # then re-run setup"
         return 0
       fi
-      write_repo_env_skeleton "${repo}/.env"
-      echo "    Created ${repo}/.env with Infisical placeholders."
-      echo "    Fill INFISICAL_API_URL, INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET, INFISICAL_ENV, INFISICAL_PROJECT_ID."
+      if [[ -f "${repo}/.env" ]]; then
+        echo "  ${name}: .env exists but Infisical keys missing or empty (sandbox builds will fail)"
+      else
+        echo "  ${name}: .env missing (sandbox compose builds blocked until created)"
+      fi
+      if ! can_paste_interactively; then
+        echo "           non-interactive — paste values manually into ${repo}/.env then re-run setup"
+        return 0
+      fi
+      echo "           paste Infisical + any other KEY=value lines for this repo."
+      echo "           need: INFISICAL_PROJECT_ID, INFISICAL_DOMAIN|API_URL, and TOKEN or CLIENT_ID+SECRET"
+      if read_env_paste_to_file "${repo}/.env"; then
+        return 0
+      fi
+      echo "           left ${repo}/.env untouched; re-run setup when ready." >&2
       return 0
       ;;
   esac
 }
 
 # Run after project sync over desired dirs.
-# Sets REPO_ENV_OK REPO_ENV_MISSING REPO_ENV_INFISICAL_WARN REPO_ENV_SKIPPED counts.
+# Sets REPO_ENV_OK REPO_ENV_NEEDS_PASTE REPO_ENV_SKIPPED counts.
+# "needs_paste" covers both missing and present-but-empty .env files.
 ensure_repos_env() {
   local -a repos=("$@")
   REPO_ENV_OK=0
-  REPO_ENV_MISSING=0
-  REPO_ENV_INFISICAL_WARN=0
+  REPO_ENV_NEEDS_PASTE=0
   REPO_ENV_SKIPPED=0
   if [[ ${#repos[@]} -eq 0 ]]; then
     return 0
   fi
   echo
-  echo "Per-repo .env for sandbox builds (auto-creates placeholders when missing):"
+  echo "Per-repo .env for sandbox builds (paste required — never auto-created):"
   local skip_pat
   skip_pat="$(repo_env_skip_patterns)"
   if [[ -n "$skip_pat" ]]; then
@@ -218,24 +227,18 @@ ensure_repos_env() {
       echo "  $(basename "$r"): skipped (OPENCODE_REPO_ENV_SKIP)"
       continue
     fi
-    if [[ "${DRY_RUN:-0}" == "1" ]]; then
-      status="$(classify_repo_env "$r")"
-      echo "  [dry-run] $(basename "$r"): ${status}"
-      case "$status" in
-        ok) REPO_ENV_OK=$((REPO_ENV_OK + 1)) ;;
-        missing) REPO_ENV_MISSING=$((REPO_ENV_MISSING + 1)) ;;
-        missing_infisical) REPO_ENV_INFISICAL_WARN=$((REPO_ENV_INFISICAL_WARN + 1)) ;;
-      esac
-      continue
-    fi
-    ensure_repo_env_interactive "$r" "${YES:-0}"
     status="$(classify_repo_env "$r")"
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      echo "  [dry-run] $(basename "$r"): ${status}"
+    else
+      ensure_repo_env_interactive "$r"
+      status="$(classify_repo_env "$r")"
+    fi
     case "$status" in
       ok) REPO_ENV_OK=$((REPO_ENV_OK + 1)) ;;
-      missing) REPO_ENV_MISSING=$((REPO_ENV_MISSING + 1)) ;;
-      missing_infisical) REPO_ENV_INFISICAL_WARN=$((REPO_ENV_INFISICAL_WARN + 1)) ;;
+      needs_paste) REPO_ENV_NEEDS_PASTE=$((REPO_ENV_NEEDS_PASTE + 1)) ;;
     esac
   done
   echo
-  echo "Repo .env summary: ok=${REPO_ENV_OK} missing=${REPO_ENV_MISSING} infisical_incomplete=${REPO_ENV_INFISICAL_WARN} skipped=${REPO_ENV_SKIPPED}"
+  echo "Repo .env summary: ok=${REPO_ENV_OK} needs_paste=${REPO_ENV_NEEDS_PASTE} skipped=${REPO_ENV_SKIPPED}"
 }

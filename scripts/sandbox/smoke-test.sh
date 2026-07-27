@@ -6,19 +6,69 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SANDBOX="${SCRIPT_DIR}/sandbox"
-FIXTURE_DIR="${REPO_ROOT}/docker/sandbox/fixtures/compose-smoke"
+REPO_FIXTURE_DIR="${REPO_ROOT}/docker/sandbox/fixtures/compose-smoke"
 SMOKE_ID="smoke-$$"
+
+# Inherit the lib helpers (opencode-env / container_env_get) so we can read
+# PID 1's environ with the right uid (root inside the container cannot read
+# another uid's /proc/1/environ). The lib also has the right UID/GID helpers.
+# shellcheck source=../lib/opencode-api.sh
+source "${SCRIPT_DIR}/../lib/opencode-api.sh"
 
 # Prefer in-container CLI when OpenCode is running with sandbox enabled.
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx opencode-server; then
   if docker exec opencode-server test -x /usr/local/bin/sandbox 2>/dev/null; then
-    run_sandbox() { docker exec -e OPENCODE_SANDBOX_ENABLED="${OPENCODE_SANDBOX_ENABLED:-}" opencode-server sandbox "$@"; }
+    run_sandbox() { docker exec -e OPENCODE_SANDBOX_ENABLED="${OPENCODE_SANDBOX_ENABLED:-}" opencode-server /usr/local/bin/sandbox "$@"; }
   else
     run_sandbox() { "$SANDBOX" "$@"; }
   fi
 else
   run_sandbox() { "$SANDBOX" "$@"; }
 fi
+
+# Resolve the smoke worktree path. Infisical is the source of truth and the
+# host .env is bootstrap-only; ask the running container. The fixture must
+# live under a host path that is (a) bind-mounted into the container at the
+# same path, and (b) writable by the host user. We use a sibling subdir of
+# OPENCODE_WORKTREES_DIR because compose bind-mounts that exact host path
+# into the container (the runtime user owns it). Going above the worktree
+# dir would land in a container-only /home/robin/... stub that does not
+# reflect the host filesystem, so write access would be lost.
+resolve_worktrees_dir() {
+  if [[ -n "${OPENCODE_WORKTREES_DIR:-}" ]]; then
+    echo "${OPENCODE_WORKTREES_DIR%/}"
+    return
+  fi
+  local v
+  v="$(container_env_get OPENCODE_WORKTREES_DIR 2>/dev/null || true)"
+  if [[ -n "$v" ]]; then
+    echo "${v%/}"
+    return
+  fi
+}
+
+WORKTREES_DIR="$(resolve_worktrees_dir)"
+if [[ -z "${WORKTREES_DIR:-}" ]]; then
+  echo "Smoke: cannot determine OPENCODE_WORKTREES_DIR (host or container)" >&2
+  exit 1
+fi
+SMOKE_FIXTURE_DIR="${WORKTREES_DIR}/.smoke-fixtures/compose-smoke"
+
+# Ensure the fixture exists at the path the in-container CLI can see. The
+# canonical copy lives in the repo; copy once on first run so OPENCODE_APPS_DIR
+# always has a host-path copy the sibling can bind.
+ensure_fixture_under_apps_dir() {
+  if [[ -f "${SMOKE_FIXTURE_DIR}/docker-compose.test.yml" ]]; then
+    return 0
+  fi
+  if [[ ! -f "${REPO_FIXTURE_DIR}/docker-compose.test.yml" ]]; then
+    echo "Smoke: canonical fixture missing at ${REPO_FIXTURE_DIR}/docker-compose.test.yml" >&2
+    return 1
+  fi
+  echo "Smoke: seeding ${REPO_FIXTURE_DIR} -> ${SMOKE_FIXTURE_DIR}"
+  mkdir -p "${SMOKE_FIXTURE_DIR}"
+  cp -a "${REPO_FIXTURE_DIR}/." "${SMOKE_FIXTURE_DIR}/"
+}
 
 echo "== sandbox probe =="
 set +e
@@ -42,8 +92,13 @@ if ! echo "$probe_out" | grep -q '"available":true'; then
   exit 1
 fi
 
-# Host-path fixture (same path inside sibling when mounted from OpenCode)
-WORKTREE="$FIXTURE_DIR"
+# Host-path fixture (same path inside sibling when mounted from OpenCode).
+# Path must be visible to the in-container `sandbox` CLI and the host docker
+# daemon bind — i.e. under OPENCODE_APPS_DIR. Seed from repo on first run.
+if ! ensure_fixture_under_apps_dir; then
+  exit 1
+fi
+WORKTREE="$SMOKE_FIXTURE_DIR"
 if [[ ! -f "${WORKTREE}/docker-compose.test.yml" ]]; then
   echo "Smoke: missing fixture ${WORKTREE}/docker-compose.test.yml" >&2
   exit 1

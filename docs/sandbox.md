@@ -2,7 +2,9 @@
 
 **Mac / default:** leave `OPENCODE_SANDBOX_MODE=off` (the `.env.example` default). The stack is unchanged — no `docker.sock` mount, no Sysbox. Agents cannot run nested Compose; that is expected.
 
-**Ubuntu:** install Sysbox, set `OPENCODE_SANDBOX_MODE=auto` (or `on`), run setup, build the sandbox image, restart compose with the sandbox overlay. Agents then use the `sandbox` CLI to create ephemeral Sysbox siblings that run each repo’s own Docker Compose build/test stack.
+**Ubuntu:** install Sysbox (one-time, see below), set `OPENCODE_SANDBOX_MODE=auto` in Infisical (or host `.env`), then run `./scripts/setup.sh`. The script probes for Sysbox, builds the opencode image + sibling image, and brings the stack up with the overlay — no extra build steps for the operator. Agents then use the `sandbox` CLI to create ephemeral Sysbox siblings that run each repo’s own Docker Compose build/test stack.
+
+Set `OPENCODE_SANDBOX_SKIP_AUTO_BUILD=1` to opt out of the auto build/restart and drive the stack manually. The smoke test (`./scripts/sandbox/smoke-test.sh`) is a manual verification — it does not run by default.
 
 ## Mode flag
 
@@ -85,19 +87,18 @@ docker run --runtime=sysbox-runc --rm -it --hostname=sbox-test alpine sh -c 'ech
 ## Enable in this stack
 
 ```bash
-# .env
-OPENCODE_SANDBOX_MODE=auto   # or on
-
+# Set OPENCODE_SANDBOX_MODE=auto|on in Infisical (or in host .env as a local override),
+# then either start the stack fresh or re-run setup:
+./scripts/compose.sh up -d --build    # first time
+./scripts/setup.sh                    # configures sandbox + build/restart as needed + preflight + projects + bootstrap
+# or, to only configure sandbox + build/restart:
 ./scripts/setup.sh sandbox
-# or: ./scripts/setup.sh preflight
 
-docker compose build opencode
-./scripts/sandbox/build-image.sh
-docker compose up -d
-
-# Smoke (create → nested compose test → destroy)
+# Verify (manual smoke test)
 ./scripts/sandbox/smoke-test.sh
 ```
+
+The first `./scripts/setup.sh` after flipping `OPENCODE_SANDBOX_MODE=auto|on` does the build/restart automatically. Re-runs detect the stack is already enabled and skip the rebuild. To force a rebuild, `OPENCODE_SANDBOX_SKIP_AUTO_BUILD=0` (default) — the script uses image mtime to decide; pass `--no-cache` via `./scripts/compose.sh build --no-cache opencode` first if you need a clean build.
 
 ## Agent CLI contract
 
@@ -171,7 +172,11 @@ sandbox destroy --id blockshed   # unexpose first
 
 OpenCode server Infisical (`infisical run` in the entrypoint) does **not** inject secrets into Sysbox sibling builds. Each app repo needs its own **`.env`** on the mounted path (visible inside the sibling).
 
-**Setup** (`projects local|github`): for each selected repo, if `.env` is missing, offer to **create** it and **paste** vars (Infisical + anything else). Never copy from `.env.example`. Preflight warns when work repos lack `.env` or Infisical key names.
+Setup **never auto-creates a placeholder `.env`** — a file with all `KEY=` empty values looks like a config but isn't, and has been a source of confusion. The flow is paste-only:
+
+- If `.env` is **missing** → setup prompts you to paste Infisical + any repo vars (end the paste with a line containing only `.`).
+- If `.env` **exists but its required Infisical keys are empty** → same prompt; paste the real values in.
+- If `.env` is **complete** (all required keys have non-empty values) → no action.
 
 By default, basename globs in `OPENCODE_REPO_ENV_SKIP` (default `*-spec`) are **not** checked — product spec hubs usually have no sandbox build. Set `OPENCODE_REPO_ENV_SKIP=` (empty) to include every repo, or add more globs (`*-spec,*-docs`).
 
@@ -179,7 +184,7 @@ Preflight only runs this check when sandbox is enabled (`OPENCODE_SANDBOX_ENABLE
 
 ```bash
 ./scripts/setup.sh projects local
-# … create .env + paste KEY=value lines, end with a line containing only: .
+# … for each repo: paste KEY=value lines, end with a line containing only: .
 ```
 
 ## Phase summary
