@@ -18,7 +18,17 @@ source "${SCRIPT_DIR}/../lib/opencode-api.sh"
 # Prefer in-container CLI when OpenCode is running with sandbox enabled.
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx opencode-server; then
   if docker exec opencode-server test -x /usr/local/bin/sandbox 2>/dev/null; then
-    run_sandbox() { docker exec -e OPENCODE_SANDBOX_ENABLED="${OPENCODE_SANDBOX_ENABLED:-}" opencode-server /usr/local/bin/sandbox "$@"; }
+    run_sandbox() {
+      local sb_enabled="${OPENCODE_SANDBOX_ENABLED:-}"
+      if [[ -z "$sb_enabled" ]]; then
+        sb_enabled="$(container_env_get OPENCODE_SANDBOX_ENABLED 2>/dev/null || true)"
+      fi
+      if [[ -n "$sb_enabled" ]]; then
+        docker exec -e OPENCODE_SANDBOX_ENABLED="$sb_enabled" opencode-server /usr/local/bin/sandbox "$@"
+      else
+        docker exec opencode-server /usr/local/bin/sandbox "$@"
+      fi
+    }
   else
     run_sandbox() { "$SANDBOX" "$@"; }
   fi

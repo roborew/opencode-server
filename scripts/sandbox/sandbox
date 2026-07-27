@@ -13,6 +13,15 @@ PUBLISH_IMAGE="${OPENCODE_SANDBOX_ROUTE_IMAGE:-alpine/socat:1.8.0.0}"
 # Optional hint for agents (existing host tunnel UUID/name); not required for expose.
 TUNNEL_ID="${OPENCODE_SANDBOX_TUNNEL_ID:-}"
 
+ensure_state_dir() {
+  if mkdir -p "$STATE_DIR" 2>/dev/null; then
+    return 0
+  fi
+  local fallback="${TMPDIR:-/tmp}/opencode-sandboxes"
+  mkdir -p "$fallback"
+  STATE_DIR="$fallback"
+}
+
 usage() {
   cat <<'EOF'
 Usage: sandbox <command> [options]
@@ -131,7 +140,7 @@ write_state() {
   local worktree="$3"
   local name
   name="$(container_name "$id")"
-  mkdir -p "$STATE_DIR"
+  ensure_state_dir
   local expose_json="null"
   if [[ -f "$(state_path "$id")" ]]; then
     expose_json="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d.get("expose")))' "$(state_path "$id")" 2>/dev/null || echo null)"
@@ -160,7 +169,7 @@ write_expose_state() {
   local url="$7"
   local path
   path="$(state_path "$id")"
-  mkdir -p "$STATE_DIR"
+  ensure_state_dir
   if [[ ! -f "$path" ]]; then
     write_state "$id" "ready" ""
   fi
@@ -248,8 +257,26 @@ parse_create_args() {
   fi
 }
 
+resolve_host_worktree_path() {
+  local requested="$1"
+  local container_root="${OPENCODE_CONTAINER_WORKTREE:-/var/opencode-xdg/opencode/worktree}"
+  local host_root="${OPENCODE_WORKTREES_DIR:-}"
+
+  if [[ -n "$host_root" && "$requested" == "$container_root/"* ]]; then
+    local suffix="${requested#${container_root}/}"
+    local candidate="${host_root%/}/${suffix}"
+    if [[ -d "$candidate" ]]; then
+      echo "$candidate"
+      return 0
+    fi
+  fi
+
+  echo "$requested"
+}
+
 cmd_create() {
   parse_create_args "$@"
+  CREATE_WORKTREE="$(resolve_host_worktree_path "$CREATE_WORKTREE")"
   if [[ "${OPENCODE_SANDBOX_ENABLED:-0}" != "1" ]]; then
     emit_unavailable "SANDBOX_UNAVAILABLE" "OPENCODE_SANDBOX_ENABLED!=1" >&2
     return 2

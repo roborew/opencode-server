@@ -20,23 +20,64 @@ if [[ "$(id -u)" -eq 0 ]]; then
   # XDG dir itself (not -R): worktree is a host bind mount and can be huge;
   # recursive chown there blocks startup for minutes.
   mkdir -p /var/opencode-xdg/opencode /var/opencode-xdg/sandboxes
-  chown "${OPENCODE_UID}:${OPENCODE_GID}" \
-    /var/opencode-xdg /var/opencode-xdg/opencode /var/opencode-xdg/sandboxes \
-    2>/dev/null || true
+  chown "${OPENCODE_UID}:${OPENCODE_GID}" /var/opencode-xdg 2>/dev/null || true
+  chown "${OPENCODE_UID}:${OPENCODE_GID}" /var/opencode-xdg/opencode 2>/dev/null || true
+  chown "${OPENCODE_UID}:${OPENCODE_GID}" /var/opencode-xdg/sandboxes 2>/dev/null || true
   # Do not chown OPENCODE_WORKTREES_DIR / OPENCODE_APPS_DIR — host-owned binds.
 
   # macOS host GIDs (e.g. staff=20) may not exist in the Ubuntu image's
   # group database, and `runuser -g "#N"` is unreliable. Ensure the GID
   # exists, then drop with setpriv (no /etc/passwd entry required).
-  if ! getent group "${OPENCODE_GID}" >/dev/null 2>&1; then
-    groupadd -o -g "${OPENCODE_GID}" "hostgid${OPENCODE_GID}" 2>/dev/null || true
+  ensure_group_for_gid() {
+    local gid="$1"
+    local fallback_name="$2"
+    if ! getent group "${gid}" >/dev/null 2>&1; then
+      groupadd -o -g "${gid}" "${fallback_name}" 2>/dev/null || true
+    fi
+  }
+  ensure_group_for_gid "${OPENCODE_GID}" "hostgid${OPENCODE_GID}"
+
+  extra_gid=""
+  if [[ -S /var/run/docker.sock ]]; then
+    # Ensure the bind-mounted host socket is usable by the runtime uid:gid.
+    # On many hosts the socket group is `docker` (often gid 983), which may
+    # not map to the dropped runtime user/group inside this image.
+    chgrp "${OPENCODE_GID}" /var/run/docker.sock 2>/dev/null || true
+    chmod g+rw /var/run/docker.sock 2>/dev/null || true
+    sock_gid="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
+    if [[ -n "${sock_gid}" && "${sock_gid}" =~ ^[0-9]+$ ]]; then
+      ensure_group_for_gid "${sock_gid}" "dockersock${sock_gid}"
+      sock_group_name="$(getent group "${sock_gid}" | cut -d: -f1 || true)"
+      if [[ -n "${sock_group_name}" ]]; then
+        runtime_user="$(getent passwd "${OPENCODE_UID}" | cut -d: -f1 | head -n1 || true)"
+        for user_name in "${runtime_user:-}" opencode ubuntu; do
+          [[ -n "${user_name}" ]] || continue
+          if getent passwd "${user_name}" >/dev/null 2>&1; then
+            usermod -aG "${sock_group_name}" "${user_name}" 2>/dev/null || true
+          fi
+        done
+      fi
+      if [[ "${sock_gid}" != "${OPENCODE_GID}" ]]; then
+        extra_gid="${sock_gid}"
+      fi
+    fi
   fi
   echo "opencode-entrypoint: dropping to uid=${OPENCODE_UID} gid=${OPENCODE_GID}" >&2
   if command -v setpriv >/dev/null 2>&1; then
+    if [[ -n "${extra_gid}" ]]; then
+      exec setpriv --reuid="${OPENCODE_UID}" --regid="${OPENCODE_GID}" --groups="${extra_gid}" -- "$0" "$@"
+    fi
     exec setpriv --reuid="${OPENCODE_UID}" --regid="${OPENCODE_GID}" --clear-groups -- "$0" "$@"
   fi
   gname="$(getent group "${OPENCODE_GID}" | cut -d: -f1 || true)"
+  extra_gname=""
+  if [[ -n "${extra_gid}" ]]; then
+    extra_gname="$(getent group "${extra_gid}" | cut -d: -f1 || true)"
+  fi
   if [[ -n "$gname" ]]; then
+    if [[ -n "${extra_gname}" ]]; then
+      exec runuser -u "#${OPENCODE_UID}" -g "$gname" -G "$extra_gname" -- "$0" "$@"
+    fi
     exec runuser -u "#${OPENCODE_UID}" -g "$gname" -- "$0" "$@"
   fi
   exec runuser -u "#${OPENCODE_UID}" -- "$0" "$@"
