@@ -156,8 +156,19 @@ opencode_base_url() {
 }
 
 opencode_auth() {
-  local user="${OPENCODE_SERVER_USERNAME:-opencode}"
+  local user="${OPENCODE_SERVER_USERNAME:-}"
   local pass="${OPENCODE_SERVER_PASSWORD:-}"
+  # Host .env often has Infisical bootstrap only — pull runtime auth from the
+  # running container (.env compose injection or Infisical) when needed.
+  if container_running; then
+    if [[ -z "$user" ]]; then
+      user="$(container_env_get OPENCODE_SERVER_USERNAME)"
+    fi
+    if [[ -z "$pass" || "$pass" == "change-me" ]]; then
+      pass="$(container_env_get OPENCODE_SERVER_PASSWORD)"
+    fi
+  fi
+  user="${user:-opencode}"
   echo "${user}:${pass}"
 }
 
@@ -245,19 +256,29 @@ container_running() {
 # Read KEY from PID 1 environ inside a container (runtime secrets — .env and/or Infisical).
 # Must run as PID 1's uid: container root lacks CAP_SYS_PTRACE, so /proc/*/environ
 # of another uid returns EACCES even for uid 0.
+# Falls back to `docker inspect` Config.Env for minimal images (e.g. twingate) with no sh.
 container_env_get() {
   local key="$1"
   local cname="${2:-$CONTAINER_NAME}"
   if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$cname"; then
     return 0
   fi
-  local uid
+  local uid out=""
   uid="$(docker exec "$cname" stat -c '%u' /proc/1 2>/dev/null || true)"
-  if [[ -z "$uid" ]]; then
-    return 0
+  if [[ -n "$uid" ]]; then
+    out="$(
+      docker exec -u "$uid" "$cname" sh -c \
+        "tr '\\0' '\\n' < /proc/1/environ 2>/dev/null | sed -n 's/^${key}=//p' | head -1" \
+        2>/dev/null || true
+    )"
   fi
-  docker exec -u "$uid" "$cname" sh -c \
-    "tr '\\0' '\\n' < /proc/1/environ 2>/dev/null | sed -n 's/^${key}=//p' | head -1"
+  if [[ -z "$out" ]]; then
+    out="$(
+      docker inspect "$cname" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+        | sed -n "s/^${key}=//p" | head -1
+    )"
+  fi
+  printf '%s' "$out"
 }
 
 docker_exec() {

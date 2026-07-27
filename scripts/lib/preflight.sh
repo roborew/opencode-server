@@ -181,10 +181,22 @@ check_repo_envs() {
   if [[ -z "${WORKSPACE_ROOT:-}" || ! -d "${WORKSPACE_ROOT}" ]]; then
     return
   fi
-  local missing=0 incomplete=0 ok=0 scanned=0
+  # Per-repo .env is for Sysbox sibling sandbox builds only — server Infisical
+  # does not inject into siblings. Skip when sandbox is off (Mac default).
+  local mode="${OPENCODE_SANDBOX_MODE:-off}"
+  local enabled="${OPENCODE_SANDBOX_ENABLED:-0}"
+  mode="$(echo "$mode" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$enabled" != "1" && "$mode" != "on" ]]; then
+    return
+  fi
+  local missing=0 incomplete=0 ok=0 scanned=0 skipped=0
   local root status
   while IFS= read -r root; do
     [[ -n "$root" ]] || continue
+    if repo_env_should_skip "$root"; then
+      skipped=$((skipped + 1))
+      continue
+    fi
     scanned=$((scanned + 1))
     (( scanned > 40 )) && break
     status="$(classify_repo_env "$root")"
@@ -195,16 +207,27 @@ check_repo_envs() {
     esac
   done < <(find "$WORKSPACE_ROOT" -maxdepth 3 -name .git -type d -prune 2>/dev/null | while read -r g; do dirname "$g"; done)
 
+  local skip_note=""
+  local skip_pat
+  skip_pat="$(repo_env_skip_patterns)"
+  if [[ "$skipped" -gt 0 && -n "$skip_pat" ]]; then
+    skip_note="; skipped ${skipped} matching ${skip_pat}"
+  fi
+
   if [[ "$scanned" -eq 0 ]]; then
-    preflight_record warn "no git repos under ${WORKSPACE_ROOT} to check for .env"
+    if [[ "$skipped" -gt 0 ]]; then
+      preflight_record ok "repo .env: no work repos to check${skip_note}"
+    else
+      preflight_record warn "no git repos under ${WORKSPACE_ROOT} to check for .env"
+    fi
     return
   fi
   if [[ "$missing" -eq 0 && "$incomplete" -eq 0 ]]; then
-    preflight_record ok "repo .env: ${ok}/${scanned} ready for Infisical/sandbox builds"
+    preflight_record ok "repo .env: ${ok}/${scanned} ready for Infisical/sandbox builds${skip_note}"
     return
   fi
   preflight_record warn \
-    "repo .env: ok=${ok} missing=${missing} infisical_incomplete=${incomplete} (of ${scanned})" \
+    "repo .env: ok=${ok} missing=${missing} infisical_incomplete=${incomplete} (of ${scanned}${skip_note})" \
     "./scripts/setup.sh projects local  # create .env + paste Infisical vars (no .env.example)"
 }
 
@@ -221,19 +244,31 @@ check_opencode_health() {
     return
   fi
   load_env 2>/dev/null || return
-  local health version code port
+  local health version code port attempt
   port="${OPENCODE_PUBLISH_PORT:-4097}"
   port="${port##*:}"
 
-  if health="$(api_get "/global/health" 2>/dev/null)"; then
-    if command -v python3 >/dev/null 2>&1; then
-      version="$(echo "$health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('version','?'))" 2>/dev/null || echo '?')"
-    else
-      version="?"
+  # Brief retry — right after recreate the port may not be listening yet.
+  for attempt in 1 2 3 4 5; do
+    if health="$(api_get "/global/health" 2>/dev/null)"; then
+      if command -v python3 >/dev/null 2>&1; then
+        version="$(echo "$health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('version','?'))" 2>/dev/null || echo '?')"
+      else
+        version="?"
+      fi
+      preflight_record ok "opencode-server healthy (v${version})"
+      return
     fi
-    preflight_record ok "opencode-server healthy (v${version})"
-    return
-  fi
+    code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/global/health" 2>/dev/null || true)"
+    code="${code:-000}"
+    if [[ "$code" == "401" ]]; then
+      break
+    fi
+    if [[ "$code" != "000" ]]; then
+      break
+    fi
+    sleep 2
+  done
 
   # Host .env password often missing/wrong when secrets live in Infisical.
   # Retry the authenticated check with Infisical-injected env when configured.
@@ -283,8 +318,8 @@ check_opencode_health() {
   code="${code:-000}"
   if [[ "$code" == "401" ]]; then
     preflight_record warn \
-      "opencode-server up (HTTP 401) — host auth mismatch vs Infisical password" \
-      "health is OK inside Infisical; optional: put OPENCODE_SERVER_PASSWORD in host .env for preflight"
+      "opencode-server up (HTTP 401) — could not authenticate health check" \
+      "password missing/mismatch in container; check OPENCODE_SERVER_PASSWORD in .env or Infisical"
     return
   fi
   if [[ "$code" == "000" ]]; then
@@ -559,6 +594,7 @@ print(len(c) if isinstance(c, list) else 0)
 
 check_twingate_connector() {
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx twingate-connector; then
+    # Twingate image is minimal (no sh/stat) — use compose Config.Env via inspect.
     local network=""
     network="$(container_env_get TWINGATE_NETWORK twingate-connector)" || network=""
     if [[ -n "$network" ]]; then

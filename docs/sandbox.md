@@ -171,7 +171,11 @@ sandbox destroy --id blockshed   # unexpose first
 
 OpenCode server Infisical (`infisical run` in the entrypoint) does **not** inject secrets into Sysbox sibling builds. Each app repo needs its own **`.env`** on the mounted path (visible inside the sibling).
 
-**Setup** (`projects local|github`): for each selected repo, if `.env` is missing, offer to **create** it and **paste** vars (Infisical + anything else). Never copy from `.env.example`. Preflight warns when repos lack `.env` or Infisical key names.
+**Setup** (`projects local|github`): for each selected repo, if `.env` is missing, offer to **create** it and **paste** vars (Infisical + anything else). Never copy from `.env.example`. Preflight warns when work repos lack `.env` or Infisical key names.
+
+By default, basename globs in `OPENCODE_REPO_ENV_SKIP` (default `*-spec`) are **not** checked — product spec hubs usually have no sandbox build. Set `OPENCODE_REPO_ENV_SKIP=` (empty) to include every repo, or add more globs (`*-spec,*-docs`).
+
+Preflight only runs this check when sandbox is enabled (`OPENCODE_SANDBOX_ENABLED=1` / mode `on`). With sandbox off (Mac default), server Infisical alone is enough — per-app `.env` files are not required.
 
 ```bash
 ./scripts/setup.sh projects local

@@ -40,6 +40,7 @@ Do **not** bake secrets into the Docker image. Do **not** permanently `infisical
 | `OPENCODE_PUBLISH_PORT` | Host port for OpenCode (default `4097`; avoid `4096` — Kilo) |
 | `OPENCODE_OAUTH_CALLBACK_PUBLISH` | Host bind for MCP OAuth callback (default `127.0.0.1:19876`) |
 | `OPENCODE_APPS_DIR` | Host path for git repos — same-path bind (default `${HOME}/projects`; absolute path required) |
+| `OPENCODE_REPO_ENV_SKIP` | Comma-separated basename globs skipped by per-repo `.env` checks (default `*-spec`). Empty = check all repos |
 | `OPENCODE_WORKTREES_DIR` | Host worktree dir ending in `/opencode/worktree` (default `~/.local/share/opencode/worktree`) |
 | `MILVUS_PUBLISH_PORT` | Host port for Milvus gRPC (empty = not published) |
 | `MILVUS_HEALTH_PUBLISH_PORT` | Host port for Milvus health endpoint |

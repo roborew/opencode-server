@@ -7,6 +7,38 @@ set -euo pipefail
 INFISICAL_REQUIRED_ANY_DOMAIN=(INFISICAL_DOMAIN INFISICAL_API_URL)
 INFISICAL_REQUIRED_PROJECT=(INFISICAL_PROJECT_ID)
 
+# Comma-separated basename globs skipped by repo .env checks (preflight + setup).
+# Default *-spec: product spec hubs usually need no sandbox Infisical .env.
+# Unset → default. Empty string → include every repo (no skips).
+# Examples: *-spec | *-spec,*-docs | (empty)
+repo_env_skip_patterns() {
+  # Use "-" not ":-" so an explicit empty value means "skip nothing".
+  echo "${OPENCODE_REPO_ENV_SKIP-*-spec}"
+}
+
+# True if basename(repo) matches any OPENCODE_REPO_ENV_SKIP glob.
+repo_env_should_skip() {
+  local repo="$1"
+  local name patterns p rest
+  name="$(basename "$repo")"
+  patterns="$(repo_env_skip_patterns)"
+  [[ -z "$patterns" ]] && return 1
+  # Comma-split without pathname-expanding globs like *-spec.
+  rest="${patterns},"
+  while [[ -n "$rest" ]]; do
+    p="${rest%%,*}"
+    rest="${rest#*,}"
+    p="${p#"${p%%[![:space:]]*}"}"
+    p="${p%"${p##*[![:space:]]}"}"
+    [[ -z "$p" ]] && continue
+    # shellcheck disable=SC2254 # intentional glob match from config
+    case "$name" in
+      $p) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # Returns 0 if Infisical auth looks present in .env (key names non-empty).
 env_has_infisical_auth() {
   local env_file="$1"
@@ -170,20 +202,31 @@ ensure_repo_env_interactive() {
 }
 
 # Run after project sync over desired dirs.
-# Sets REPO_ENV_OK REPO_ENV_MISSING REPO_ENV_INFISICAL_WARN counts.
+# Sets REPO_ENV_OK REPO_ENV_MISSING REPO_ENV_INFISICAL_WARN REPO_ENV_SKIPPED counts.
 ensure_repos_env() {
   local -a repos=("$@")
   REPO_ENV_OK=0
   REPO_ENV_MISSING=0
   REPO_ENV_INFISICAL_WARN=0
+  REPO_ENV_SKIPPED=0
   if [[ ${#repos[@]} -eq 0 ]]; then
     return 0
   fi
   echo
   echo "Per-repo .env for sandbox builds (no .env.example — paste or create manually):"
+  local skip_pat
+  skip_pat="$(repo_env_skip_patterns)"
+  if [[ -n "$skip_pat" ]]; then
+    echo "(skipping basename match: ${skip_pat} — set OPENCODE_REPO_ENV_SKIP= to include all)"
+  fi
   local r status
   for r in "${repos[@]}"; do
     [[ -d "$r" ]] || continue
+    if repo_env_should_skip "$r"; then
+      REPO_ENV_SKIPPED=$((REPO_ENV_SKIPPED + 1))
+      echo "  $(basename "$r"): skipped (OPENCODE_REPO_ENV_SKIP)"
+      continue
+    fi
     status="$(classify_repo_env "$r")"
     case "$status" in
       ok) REPO_ENV_OK=$((REPO_ENV_OK + 1)) ;;
@@ -197,5 +240,5 @@ ensure_repos_env() {
     ensure_repo_env_interactive "$r" "${YES:-0}"
   done
   echo
-  echo "Repo .env summary: ok=${REPO_ENV_OK} missing=${REPO_ENV_MISSING} infisical_incomplete=${REPO_ENV_INFISICAL_WARN}"
+  echo "Repo .env summary: ok=${REPO_ENV_OK} missing=${REPO_ENV_MISSING} infisical_incomplete=${REPO_ENV_INFISICAL_WARN} skipped=${REPO_ENV_SKIPPED}"
 }
