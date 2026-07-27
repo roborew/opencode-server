@@ -109,7 +109,7 @@ configure_sandbox_mode() {
 
   case "$mode" in
     off|"")
-      echo "Sandbox: mode=off (default) — Mac-identical stack; no docker.sock mount."
+      echo "Sandbox: mode=off (default) — host-safe stack; no docker.sock mount."
       _disable_sandbox_compose
       load_env 2>/dev/null || true
       return 0

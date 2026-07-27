@@ -139,7 +139,7 @@ check_sandbox() {
 
   case "$mode" in
     off|"")
-      preflight_record ok "sandbox mode=off (Mac-safe default; no Sysbox siblings)"
+      preflight_record ok "sandbox mode=off (host-safe default; no Sysbox siblings)"
       return
       ;;
   esac
@@ -366,7 +366,7 @@ check_fqdn_local() {
     resolved="$(dscacheutil -q host -a name "$fqdn" 2>/dev/null | awk '/^ip_address:/{print $2; exit}')"
   fi
   if [[ -z "$resolved" ]] && command -v getent >/dev/null 2>&1; then
-    resolved="$(getent ahostsv4 "$fqdn" 2>/dev/null | awk '{print $1; exit}')"
+    resolved="$(getent ahostsv4 "$fqdn" 2>/dev/null | awk '{print $1; exit}' || true)"
   fi
   if [[ -z "$resolved" ]] && command -v python3 >/dev/null 2>&1; then
     resolved="$(

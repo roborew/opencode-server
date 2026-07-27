@@ -261,8 +261,20 @@ run_projects_github() {
   fi
   load_env || true
 
+  # setup.sh runs on the host, but GH secrets may only exist in the running
+  # container via Infisical injection. Fall back to container env so github
+  # mode works without duplicating secrets into host .env.
+  if [[ -z "${GH_TOKEN:-}" ]]; then
+    GH_TOKEN="$(container_env_get GH_TOKEN)"
+    export GH_TOKEN
+  fi
+  if [[ -z "${GH_ORG:-}" ]]; then
+    GH_ORG="$(container_env_get GH_ORG)"
+    export GH_ORG
+  fi
+
   if [[ -z "${GH_TOKEN:-}" || -z "${GH_ORG:-}" ]]; then
-    echo "GH_TOKEN and GH_ORG are required for github mode." >&2
+    echo "GH_TOKEN and GH_ORG are required for github mode (host .env or running container env)." >&2
     exit 1
   fi
 
