@@ -56,12 +56,13 @@ load_env || {
 }
 
 # Bind-mount parity: write OPENCODE_UID/GID before compose starts.
+# Paths (OPENCODE_APPS_DIR / WORKTREES) come from Infisical via `infisical run`
+# below — do not invent host defaults that override Infisical.
 ensure_opencode_uid_gid >/dev/null || {
   echo "compose.sh: could not resolve OPENCODE_UID/GID" >&2
   exit 1
 }
-ensure_opencode_host_paths >/dev/null || true
-# Reload so compose process sees upserted UID/GID/paths from .env.
+# Reload so compose process sees upserted UID/GID from .env.
 load_env || true
 
 if ! command -v infisical >/dev/null 2>&1; then
@@ -118,23 +119,19 @@ fi
 
 export INFISICAL_TOKEN="$token"
 
-# Host-local config must win over Infisical. Paths/UID differ per machine;
-# Infisical often carries another host's OPENCODE_APPS_DIR and breaks mounts.
-pin_apps="${OPENCODE_APPS_DIR:-}"
-pin_wt="${OPENCODE_WORKTREES_DIR:-}"
+# UID/GID are always host-local (bind-mount ownership). Paths come from Infisical
+# (or host .env if you set them there without Infisical) — do not pin paths here.
 pin_uid="${OPENCODE_UID:-}"
 pin_gid="${OPENCODE_GID:-}"
 
 echo "compose.sh: injecting Infisical secrets (env=${infisical_env}) into docker compose $*" >&2
-echo "compose.sh: pinning host OPENCODE_APPS_DIR=${pin_apps} UID:GID=${pin_uid}:${pin_gid}" >&2
+echo "compose.sh: pinning host UID:GID=${pin_uid}:${pin_gid} (paths from Infisical / .env)" >&2
 exec infisical run \
   --projectId="$project_id" \
   --env="$infisical_env" \
   --domain="$domain" \
   --token="$token" \
   -- env \
-    OPENCODE_APPS_DIR="$pin_apps" \
-    OPENCODE_WORKTREES_DIR="$pin_wt" \
     OPENCODE_UID="$pin_uid" \
     OPENCODE_GID="$pin_gid" \
     docker compose "$@"

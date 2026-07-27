@@ -17,8 +17,8 @@ Official docs: [Infisical CLI install](https://infisical.com/docs/cli/overview).
 
 | Where | What |
 | ----- | ---- |
-| Host `.env` | Infisical bootstrap (`INFISICAL_*`) + non-secret local config (paths, ports, `COMPOSE_PROFILES`, `OPENCODE_UID`/`GID`) |
-| Infisical project | Runtime secrets: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, API keys, `GH_*`, git identity, etc. |
+| Host `.env` | Infisical bootstrap (`INFISICAL_*`) + host-local UID/GID (`OPENCODE_UID`/`GID`). Paths may live here as a local override, but Infisical is preferred for `OPENCODE_APPS_DIR` / worktrees when using `./scripts/compose.sh` |
+| Infisical project | Runtime secrets **and** shared paths: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, API keys, `GH_*`, `OPENCODE_APPS_DIR`, `OPENCODE_FQDN`, git identity, etc. |
 
 Do **not** bake secrets into the Docker image. Do **not** permanently `infisical export` / env-pull into `.env` for this stack.
 

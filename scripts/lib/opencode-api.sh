@@ -120,11 +120,19 @@ ensure_opencode_uid_gid() {
   echo "${uid}:${gid} (${source})"
 }
 
-# Ensure OPENCODE_APPS_DIR / OPENCODE_WORKTREES_DIR exist in .env (compose +
-# preflight need absolute host paths). Defaults match docker-compose.yml.
+# Ensure OPENCODE_APPS_DIR / OPENCODE_WORKTREES_DIR when already set (compose +
+# preflight). Prefer Infisical for paths — do not invent ${HOME}/projects and
+# write it into .env (that used to override Infisical via compose.sh pins).
 ensure_opencode_host_paths() {
   local apps="${OPENCODE_APPS_DIR:-}"
   local wt="${OPENCODE_WORKTREES_DIR:-}"
+
+  if [[ -z "$apps" ]] && container_running; then
+    apps="$(container_env_get OPENCODE_APPS_DIR)"
+  fi
+  if [[ -z "$wt" ]] && container_running; then
+    wt="$(container_env_get OPENCODE_WORKTREES_DIR)"
+  fi
 
   if [[ -z "$apps" ]]; then
     apps="${HOME}/projects"
@@ -136,11 +144,7 @@ ensure_opencode_host_paths() {
   export OPENCODE_APPS_DIR="$apps"
   export OPENCODE_WORKTREES_DIR="$wt"
   export WORKSPACE_ROOT="$apps"
-
-  if [[ -f "${REPO_ROOT}/.env" ]]; then
-    upsert_env_key OPENCODE_APPS_DIR "$apps" "Host paths (auto-filled by setup/compose)"
-    upsert_env_key OPENCODE_WORKTREES_DIR "$wt"
-  fi
+  # Do not upsert paths into host .env — Infisical (or an explicit host edit) owns them.
   echo "${apps}"
 }
 

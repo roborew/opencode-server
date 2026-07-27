@@ -71,9 +71,24 @@ ensure_host_uid_gid() {
     return
   fi
   preflight_record ok "OPENCODE_UID/GID = ${resolved}"
-  local apps
-  apps="$(ensure_opencode_host_paths)"
-  preflight_record ok "OPENCODE_APPS_DIR = ${apps}"
+}
+
+# Resolve apps/worktrees from Infisical-injected container env when host .env omits them.
+resolve_runtime_paths() {
+  load_env 2>/dev/null || true
+  if [[ -z "${OPENCODE_APPS_DIR:-}" ]] && container_running; then
+    OPENCODE_APPS_DIR="$(container_env_get OPENCODE_APPS_DIR)"
+    export OPENCODE_APPS_DIR
+  fi
+  if [[ -z "${OPENCODE_WORKTREES_DIR:-}" ]] && container_running; then
+    OPENCODE_WORKTREES_DIR="$(container_env_get OPENCODE_WORKTREES_DIR)"
+    export OPENCODE_WORKTREES_DIR
+  fi
+  if [[ -n "${OPENCODE_APPS_DIR:-}" ]]; then
+    export WORKSPACE_ROOT="${OPENCODE_APPS_DIR}"
+  elif [[ -n "${OPENCODE_WORKSPACE_ROOT:-}" ]]; then
+    export WORKSPACE_ROOT="${OPENCODE_WORKSPACE_ROOT}"
+  fi
 }
 
 check_required_env() {
@@ -179,7 +194,7 @@ check_sandbox() {
 }
 
 check_repo_envs() {
-  load_env 2>/dev/null || true
+  resolve_runtime_paths
   if [[ -z "${WORKSPACE_ROOT:-}" || ! -d "${WORKSPACE_ROOT}" ]]; then
     return
   fi
@@ -407,9 +422,10 @@ check_workspace_mount() {
   if ! container_running; then
     return
   fi
-  load_env 2>/dev/null || true
+  resolve_runtime_paths
   if [[ -z "${WORKSPACE_ROOT:-}" ]]; then
-    preflight_record fail "OPENCODE_APPS_DIR not set" "set absolute host path in .env"
+    preflight_record fail "OPENCODE_APPS_DIR not set" \
+      "set in Infisical (or host .env) and recreate: ./scripts/compose.sh up -d --force-recreate opencode"
     return
   fi
   if docker_exec test -d "$WORKSPACE_ROOT" 2>/dev/null; then
@@ -417,7 +433,8 @@ check_workspace_mount() {
     count="$(docker_exec sh -c "ls -1 '${WORKSPACE_ROOT}' 2>/dev/null | wc -l" | tr -d ' ')"
     preflight_record ok "workspace mount ${WORKSPACE_ROOT} (${count} entries)"
   else
-    preflight_record fail "workspace mount missing at ${WORKSPACE_ROOT}" "check OPENCODE_APPS_DIR same-path bind in compose"
+    preflight_record fail "workspace mount missing at ${WORKSPACE_ROOT}" \
+      "check OPENCODE_APPS_DIR in Infisical matches a real host path"
   fi
 }
 
@@ -443,7 +460,7 @@ check_opencode_data_volume() {
 PREFLIGHT_FIX_OWNERSHIP="${PREFLIGHT_FIX_OWNERSHIP:-1}"
 
 check_repo_ownership() {
-  load_env 2>/dev/null || return
+  resolve_runtime_paths
   if [[ -z "${WORKSPACE_ROOT:-}" || ! -d "${WORKSPACE_ROOT}" ]]; then
     return
   fi
@@ -541,11 +558,12 @@ check_worktree_mount() {
   if ! container_running; then
     return
   fi
-  load_env 2>/dev/null || return
+  resolve_runtime_paths
   local host_wt="${OPENCODE_WORKTREES_DIR:-}"
   local container_wt="/var/opencode-xdg/opencode/worktree"
   if [[ -z "$host_wt" ]]; then
-    preflight_record warn "OPENCODE_WORKTREES_DIR not set" "set in .env to …/opencode/worktree for host-visible worktrees"
+    preflight_record warn "OPENCODE_WORKTREES_DIR not set" \
+      "set in Infisical (or host .env) for host-visible worktrees"
     return
   fi
   if ! docker_exec test -d "$container_wt" 2>/dev/null; then

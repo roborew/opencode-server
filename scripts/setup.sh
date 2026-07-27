@@ -209,35 +209,48 @@ run_projects_local() {
 
 # After clone/fetch: land on OPENCODE_WORK_BRANCH (default develop) when origin has it.
 # Does not force-reset local work; warns and leaves the current branch if checkout fails.
+# Run as OPENCODE_UID — host binds must be owned by that user (same as serve).
+docker_exec_git() {
+  local dir="$1"
+  shift
+  local uid="${OPENCODE_UID:-}"
+  local gid="${OPENCODE_GID:-}"
+  if [[ ! "$uid" =~ ^[0-9]+$ || ! "$gid" =~ ^[0-9]+$ ]]; then
+    echo "docker_exec_git: OPENCODE_UID/GID not set — run compose.sh / preflight first" >&2
+    return 1
+  fi
+  docker exec -u "${uid}:${gid}" "$CONTAINER_NAME" git -C "$dir" "$@"
+}
+
 ensure_work_branch() {
   local dir="$1"
   local branch="${OPENCODE_WORK_BRANCH:-develop}"
   local current remote_ref="refs/remotes/origin/${branch}"
 
-  docker_exec git -C "$dir" fetch --prune origin >/dev/null 2>&1 || true
+  docker_exec_git "$dir" fetch --prune origin >/dev/null 2>&1 || true
 
-  if ! docker_exec git -C "$dir" show-ref --verify --quiet "$remote_ref" 2>/dev/null; then
-    current="$(docker_exec git -C "$dir" branch --show-current 2>/dev/null || echo '?')"
+  if ! docker_exec_git "$dir" show-ref --verify --quiet "$remote_ref" 2>/dev/null; then
+    current="$(docker_exec_git "$dir" branch --show-current 2>/dev/null || echo '?')"
     echo "  warning: origin/${branch} missing — left on ${current}" >&2
     return 0
   fi
 
-  current="$(docker_exec git -C "$dir" branch --show-current 2>/dev/null || true)"
+  current="$(docker_exec_git "$dir" branch --show-current 2>/dev/null || true)"
   if [[ "$current" != "$branch" ]]; then
-    if docker_exec git -C "$dir" show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
-      if ! docker_exec git -C "$dir" checkout "$branch" >/dev/null 2>&1; then
+    if docker_exec_git "$dir" show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
+      if ! docker_exec_git "$dir" checkout "$branch" >/dev/null 2>&1; then
         echo "  warning: could not checkout ${branch} (local changes?) — left on ${current:-?}" >&2
         return 0
       fi
     else
-      if ! docker_exec git -C "$dir" checkout -b "$branch" --track "origin/${branch}" >/dev/null 2>&1; then
+      if ! docker_exec_git "$dir" checkout -b "$branch" --track "origin/${branch}" >/dev/null 2>&1; then
         echo "  warning: could not create local ${branch} from origin/${branch}" >&2
         return 0
       fi
     fi
   fi
 
-  docker_exec git -C "$dir" merge --ff-only "origin/${branch}" >/dev/null 2>&1 || true
+  docker_exec_git "$dir" merge --ff-only "origin/${branch}" >/dev/null 2>&1 || true
   echo "  on ${branch}"
 }
 
