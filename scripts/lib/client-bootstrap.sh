@@ -18,6 +18,12 @@ fi
 # use the same hostname as Twingate remotes (http://OPENCODE_FQDN:PORT).
 ensure_hosts_entry() {
   local host="${OPENCODE_FQDN:-$(opencode_fqdn)}"
+  if [[ -z "${host}" ]]; then
+    echo
+    echo "Host DNS"
+    echo "  [skip] OPENCODE_FQDN is empty (container/compose alias not available yet)."
+    return 0
+  fi
   local line="127.0.0.1 ${host}"
 
   echo
@@ -39,9 +45,14 @@ ensure_hosts_entry() {
   fi
 
   if [[ "${YES:-0}" != "1" ]]; then
-    read -r -p "  Add hosts entry now (requires sudo)? [Y/n] " confirm
-    if [[ "${confirm}" =~ ^[Nn]$ ]]; then
-      echo "  [skip] hosts entry — add manually: sudo sh -c 'echo ${line} >> /etc/hosts'"
+    if [[ -t 0 && -t 1 ]]; then
+      read -r -p "  Add hosts entry now (requires sudo)? [Y/n] " confirm
+      if [[ "${confirm}" =~ ^[Nn]$ ]]; then
+        echo "  [skip] hosts entry — add manually: sudo sh -c 'echo ${line} >> /etc/hosts'"
+        return 0
+      fi
+    else
+      echo "  [skip] non-interactive shell; add manually: sudo sh -c 'echo ${line} >> /etc/hosts'"
       return 0
     fi
   fi

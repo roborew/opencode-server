@@ -74,6 +74,7 @@ INCLUDE_ARCHIVED=0
 COMMAND=""
 PROJECT_MODE=""
 MCP_AUTH_SERVER=""
+AUTO_HOSTS_PREFLIGHT="${AUTO_HOSTS_PREFLIGHT:-1}"
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -261,9 +262,8 @@ run_projects_github() {
   fi
   load_env || true
 
-  # setup.sh runs on the host, but GH secrets may only exist in the running
-  # container via Infisical injection. Fall back to container env so github
-  # mode works without duplicating secrets into host .env.
+  # setup.sh runs on the host, but GH secrets may only be present in the
+  # running container via Infisical injection.
   if [[ -z "${GH_TOKEN:-}" ]]; then
     GH_TOKEN="$(container_env_get GH_TOKEN)"
     export GH_TOKEN
@@ -272,6 +272,7 @@ run_projects_github() {
     GH_ORG="$(container_env_get GH_ORG)"
     export GH_ORG
   fi
+
 
   if [[ -z "${GH_TOKEN:-}" || -z "${GH_ORG:-}" ]]; then
     echo "GH_TOKEN and GH_ORG are required for github mode (host .env or running container env)." >&2
@@ -522,6 +523,15 @@ run_bootstrap_only() {
   run_client_bootstrap "${dirs[@]}"
 }
 
+prepare_hosts_for_preflight() {
+  if [[ "${AUTO_HOSTS_PREFLIGHT}" != "1" ]]; then
+    return 0
+  fi
+  # Best-effort host mapping before preflight checks. Non-fatal in CI or
+  # non-interactive shells where sudo prompts are not available.
+  ensure_hosts_entry || true
+}
+
 main() {
   parse_args "$@"
 
@@ -537,6 +547,7 @@ main() {
       ;;
     preflight)
       configure_sandbox_mode || [[ "$FORCE" == "1" ]] || exit 1
+      prepare_hosts_for_preflight
       run_preflight
       exit $?
       ;;
@@ -551,6 +562,7 @@ main() {
       fi
       if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
         configure_sandbox_mode || [[ "$FORCE" == "1" ]] || exit 1
+        prepare_hosts_for_preflight
         run_preflight || [[ "$FORCE" == "1" ]] || exit 1
       fi
       if [[ "$PROJECT_MODE" == "local" ]]; then
@@ -562,6 +574,7 @@ main() {
     "")
       if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
         configure_sandbox_mode || [[ "$FORCE" == "1" ]] || exit 1
+        prepare_hosts_for_preflight
         run_preflight || [[ "$FORCE" == "1" ]] || exit 1
       fi
       prompt_project_mode

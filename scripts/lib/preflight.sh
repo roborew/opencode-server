@@ -265,8 +265,8 @@ check_opencode_health() {
   port="${OPENCODE_PUBLISH_PORT:-4097}"
   port="${port##*:}"
 
-  # Brief retry — right after recreate the port may not be listening yet.
-  for attempt in 1 2 3 4 5; do
+  # Readiness can lag right after recreate (entrypoint + serve + bridge).
+  for attempt in {1..20}; do
     if health="$(api_get "/global/health" 2>/dev/null)"; then
       if command -v python3 >/dev/null 2>&1; then
         version="$(echo "$health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('version','?'))" 2>/dev/null || echo '?')"

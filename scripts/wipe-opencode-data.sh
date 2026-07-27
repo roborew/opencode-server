@@ -117,23 +117,34 @@ path.write_text(json.dumps(data, indent="\t") + "\n")
 PY
 }
 
+compose_runner() {
+  if [[ -x "${SCRIPT_DIR}/compose.sh" ]]; then
+    "${SCRIPT_DIR}/compose.sh" "$@"
+  else
+    docker compose "$@"
+  fi
+}
+
 if [[ "$RESET_DESKTOP" == "1" ]]; then
   reset_desktop_server_memory
 fi
 
 echo "Stopping stack..."
-docker compose down
+compose_runner down
 
 echo "Removing volume opencode-server_opencode-data (if present)..."
 docker volume rm opencode-server_opencode-data 2>/dev/null || true
 
 echo "Starting stack (rebuild image)..."
-docker compose up -d --build
+compose_runner up -d --build
+
+publish_port="${OPENCODE_PUBLISH_PORT:-4097}"
+publish_port="${publish_port##*:}"
 
 echo
 echo "Done. Fresh server is up."
 echo "Next (Desktop still closed):"
 echo "  ./scripts/setup.sh"
 echo "  # projects local → registers host paths + assigns OpenCode colours"
-echo "  # then reopen Desktop and connect to http://${OPENCODE_FQDN:-opencode.local}:${OPENCODE_PUBLISH_PORT##*:}"
+echo "  # then reopen Desktop and connect to http://${OPENCODE_FQDN:-opencode.local}:${publish_port}"
 echo "  # Open each project once via + (host paths under OPENCODE_APPS_DIR) — no /workspace paths."
