@@ -115,7 +115,15 @@ sandbox unexpose --id feat-slug
 
 Exit code `2` / JSON `"reason":"SANDBOX_UNAVAILABLE"` means sandboxes are off — treat as a soft skip unless the stage explicitly requires Compose.
 
-OpenCode config skill: [`opencode-config-docker-sandbox-prompt.md`](opencode-config-docker-sandbox-prompt.md) (also live in `roborew/opencode` as `skills/docker-sandbox`).
+OpenCode config skill: [`opencode-config-docker-sandbox-prompt.md`](opencode-config-docker-sandbox-prompt.md) (live in [roborew/opencode-config](https://github.com/roborew/opencode-config) as `skills/docker-sandbox`). Orchestrate does **not** load that skill itself — it instructs `developer` / `frontend-dev` / `verifier` Tasks to load it when compose/Docker or review URL work applies.
+
+After merging skill/agent wiring to the branch used as `CONFIG_REF`, rebuild the OpenCode image so the container picks it up (host `~/.config/opencode` is never mounted):
+
+```bash
+docker compose build --no-cache opencode && docker compose up -d opencode
+```
+
+Do not `down -v` (drops sessions).
 
 ## App compose convention (self-contained)
 

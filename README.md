@@ -2,7 +2,7 @@
 
 Self-contained Docker Compose stack for a headless OpenCode server, Twingate remote access, and optional Milvus-backed `claude-context` indexing.
 
-**Build and run only from this directory.** Agents, skills, and `opencode.json` are cloned from [github.com/roborew/opencode-config](https://github.com/roborew/opencode-config) at image build time (`CONFIG_REPO` / `CONFIG_REF`). Your local `~/.config/opencode` checkout is never mounted into the image.
+**Build and run only from this directory.** Agents, skills, and `opencode.json` are cloned from [github.com/roborew/opencode-config](https://github.com/roborew/opencode-config) at image build time (`CONFIG_REPO` / `CONFIG_REF`). Your local `~/.config/opencode` checkout is never mounted into the image. After pushing agent/skill changes (e.g. `docker-sandbox` / orchestrate wiring) to the `CONFIG_REF` branch, rebuild: `docker compose build --no-cache opencode && docker compose up -d opencode` (never `down -v`).
 
 ## What's in the stack
 

@@ -5,7 +5,7 @@ Use when updating `roborew/opencode` / `~/.config/opencode`. Server contract: li
 Host **cloudflared** (one tunnel) is a prerequisite. Agents call `sandbox expose` (localhost publish), then upsert **tunnel public hostname** + optional **DNS** for `{slug}.{apex}`. Do not invent a tunnel-create skill.
 
 ```text
-You are editing the OpenCode config repo (roborew/opencode / ~/.config/opencode).
+You are editing the OpenCode config repo (roborew/opencode-config / ~/.config/opencode).
 
 ## Goal
 Keep skill **docker-sandbox** aligned with opencode-server:
@@ -15,6 +15,8 @@ Keep skill **docker-sandbox** aligned with opencode-server:
 3) Optional web review: `sandbox expose` (localhost publish helper) + Cloudflare
    tunnel public hostname → http://127.0.0.1:<host_port> + optional DNS
    for https://{feature-slug}.{app-apex-domain}
+4) Orchestrate **instructs** implementer/verifier Tasks to load `docker-sandbox`
+   (orchestrate never loads the skill itself)
 
 When OPENCODE_SANDBOX_ENABLED=0 / probe unavailable: soft-skip; no invented docker.sock.
 
@@ -41,8 +43,9 @@ When OPENCODE_SANDBOX_ENABLED=0 / probe unavailable: soft-skip; no invented dock
 1. skills/docker-sandbox/SKILL.md — division table, Caddy compose rules, expose + tunnel/DNS recipe
 2. skills/preflight/SKILL.md — soft sandbox probe; expose readiness from sandbox ready
 3. permission.skill docker-sandbox on developer, frontend-dev, verifier, preflight
-4. CONTEXT / RUNBOOK / capability matrix — Sandbox, Review hostname, App vs server Infisical
-5. Note in RUNBOOK: review-app path is docker-sandbox + cloudflare-api (DNS + existing tunnel hostname)
+4. Orchestrate routing: agents/orchestrate.md + skills/orchestrate-execution — instruct Tasks to load docker-sandbox (orchestrate never loads it)
+5. CONTEXT / RUNBOOK / capability matrix — Sandbox, Review hostname, App vs server Infisical, rebuild after CONFIG_REF
+6. Note in RUNBOOK: review-app path is docker-sandbox + cloudflare-api (DNS + existing tunnel hostname)
 
 ## Acceptance
 - Skill states: expose = localhost publish CLI; CF = tunnel hostname + DNS optional; no tunnel create
@@ -50,4 +53,10 @@ When OPENCODE_SANDBOX_ENABLED=0 / probe unavailable: soft-skip; no invented dock
 - No forced Sysbox when ENABLED=0
 ```
 
-After config merge: rebuild OpenCode server image (`CONFIG_REF`).
+After config merge: rebuild OpenCode server image (`CONFIG_REF`):
+
+```bash
+docker compose build --no-cache opencode && docker compose up -d opencode
+```
+
+(Do not `down -v`.)

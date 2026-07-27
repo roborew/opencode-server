@@ -5,6 +5,7 @@
 | Container name conflict | `docker compose down` in `../twingate` and `../milvus` |
 | Build fails on `git clone` | Verify `CONFIG_REF` branch exists on GitHub |
 | Config changes not in container | Server config is cloned at **image build** from `CONFIG_REPO`/`CONFIG_REF`. Rebuild: `docker compose build --no-cache opencode && docker compose up -d opencode`. Do **not** `down -v` (drops sessions). Host `~/.config/opencode` is never mounted. |
+| Orchestrate “knows nothing” about Sysbox sandbox | Skill is **`docker-sandbox`** (not Cloudflare Workers Sandbox). Orchestrate instructs Tasks to load it — it does not load the skill itself. Confirm `CONFIG_REF` includes the skill + orchestrate wiring, then rebuild the image (row above). Soft-skip when `sandbox probe` is unavailable (Mac / `OPENCODE_SANDBOX_MODE=off`). |
 | Desktop freezes / high host RAM | Usually host + Docker `claude-context` both on — see [Claude Context indexing](integrations.md#claude-context-indexing). Quit Desktop, `pkill -f claude-context-mcp`, set host `mcp.claude-context.enabled` to `false`. Run `./scripts/doctor-perf.sh` while glitching. |
 | Claude Context fails | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network; `COMPOSE_PROFILES=milvus` |
 | Want lighter stack (no Milvus) | Clear profile: `COMPOSE_PROFILES= docker compose up -d`. Re-enable with `COMPOSE_PROFILES=milvus`. |

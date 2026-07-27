@@ -2,7 +2,7 @@
 # Runtime secrets via Infisical (deployed) or compose .env (local).
 FROM ubuntu:24.04
 
-ARG CONFIG_REPO=https://github.com/roborew/opencode.git
+ARG CONFIG_REPO=https://github.com/roborew/opencode-config.git
 ARG CONFIG_REF=main
 ARG INFISICAL_CLI_VERSION=0.43.84
 # mikefarah/yq v4 — PRD frontmatter, registry/label sync, legacy slices fanout
