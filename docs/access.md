@@ -74,10 +74,11 @@ On the machine that runs the connector, `OPENCODE_FQDN` often does not resolve i
 127.0.0.1 opencode.local  →  published host port 4097  →  opencode-server
 ```
 
-`./scripts/setup.sh` can add this hosts line (sudo). It does **not** configure or modify OpenCode.app.
+`./scripts/setup.sh` can add this hosts line (sudo). It does **not** configure or modify OpenCode.app. Preflight also verifies the FQDN resolves to loopback, hits health via that hostname, and prints a clickable `http://OPENCODE_FQDN:PORT` link.
 
 ```bash
 ./scripts/setup.sh bootstrap --yes
+./scripts/setup.sh preflight   # confirms FQDN + prints Open OpenCode: http://…
 ```
 
 Manual hosts (if you skipped the prompt):

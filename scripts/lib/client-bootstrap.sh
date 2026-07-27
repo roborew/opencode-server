@@ -8,12 +8,16 @@ SCRIPT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=opencode-api.sh
 source "${SCRIPT_LIB_DIR}/opencode-api.sh"
 
-OPENCODE_FQDN="${OPENCODE_FQDN:-opencode.local}"
+OPENCODE_FQDN="${OPENCODE_FQDN:-}"
+if [[ -z "$OPENCODE_FQDN" ]]; then
+  # shellcheck disable=SC2034 # used by ensure_hosts_entry / print links
+  OPENCODE_FQDN="$(opencode_fqdn)"
+fi
 
 # Map FQDN → 127.0.0.1 on the Docker host so browsers/clients on that host can
 # use the same hostname as Twingate remotes (http://OPENCODE_FQDN:PORT).
 ensure_hosts_entry() {
-  local host="${OPENCODE_FQDN}"
+  local host="${OPENCODE_FQDN:-$(opencode_fqdn)}"
   local line="127.0.0.1 ${host}"
 
   echo

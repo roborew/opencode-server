@@ -225,9 +225,38 @@ api_patch() {
     -d "$body"
 }
 
+opencode_fqdn() {
+  # Prefer host .env (optional pin). Else the alias Compose set from Infisical.
+  if [[ -n "${OPENCODE_FQDN:-}" ]]; then
+    echo "$OPENCODE_FQDN"
+    return
+  fi
+  if container_running; then
+    local alias
+    alias="$(
+      docker inspect "$CONTAINER_NAME" --format \
+        '{{range $net, $v := .NetworkSettings.Networks}}{{range $v.Aliases}}{{println .}}{{end}}{{end}}' \
+        2>/dev/null \
+        | grep -Ev "^(${CONTAINER_NAME}|opencode)\$" \
+        | head -1
+    )"
+    if [[ -n "$alias" ]]; then
+      echo "$alias"
+      return
+    fi
+  fi
+  # No hardcoded fallback — OPENCODE_FQDN must come from Infisical (compose.sh) or host .env.
+  echo ""
+}
+
 opencode_public_url() {
-  local fqdn="${OPENCODE_FQDN:-opencode.local}"
-  local port="${OPENCODE_PUBLISH_PORT:-4097}"
+  local fqdn port
+  fqdn="$(opencode_fqdn)"
+  if [[ -z "$fqdn" ]]; then
+    echo ""
+    return 1
+  fi
+  port="${OPENCODE_PUBLISH_PORT:-4097}"
   port="${port##*:}"
   echo "http://${fqdn}:${port}"
 }
@@ -616,6 +645,10 @@ preflight_record() {
 
 preflight_summary() {
   echo
+  if [[ -n "${PREFLIGHT_PUBLIC_URL:-}" ]]; then
+    echo "Open OpenCode: ${PREFLIGHT_PUBLIC_URL}"
+    echo
+  fi
   if (( PREFLIGHT_FAIL > 0 )); then
     echo "${PREFLIGHT_WARN} warning(s), ${PREFLIGHT_FAIL} failure(s). Fix failures or re-run with --force."
     return 1

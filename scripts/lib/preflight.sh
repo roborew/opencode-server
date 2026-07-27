@@ -18,6 +18,7 @@ run_preflight() {
   PREFLIGHT_WARN=0
   PREFLIGHT_FAIL=0
   PREFLIGHT_MCP_NEEDS_AUTH=()
+  PREFLIGHT_PUBLIC_URL=""
 
   echo "Preflight"
 
@@ -28,6 +29,7 @@ run_preflight() {
   check_container
   check_optional_env
   check_opencode_health
+  check_fqdn_local
   check_workspace_mount
   check_worktree_mount
   check_repo_ownership
@@ -327,6 +329,78 @@ check_opencode_health() {
     return
   fi
   preflight_record fail "OpenCode health check failed (HTTP ${code})" "check logs: docker logs opencode-server"
+}
+
+# Confirm OPENCODE_FQDN resolves on the Docker host and serves health (same URL as Twingate).
+check_fqdn_local() {
+  load_env 2>/dev/null || true
+  local fqdn port url resolved
+  fqdn="$(opencode_fqdn)"
+  port="${OPENCODE_PUBLISH_PORT:-4097}"
+  port="${port##*:}"
+  url="$(opencode_public_url)"
+  PREFLIGHT_PUBLIC_URL="$url"
+
+  if [[ -z "${OPENCODE_FQDN:-}" ]]; then
+    preflight_record ok "OPENCODE_FQDN from container/compose: ${fqdn}" \
+      "optional: set OPENCODE_FQDN=${fqdn} in host .env to match Infisical"
+  fi
+
+  resolved=""
+  if command -v dscacheutil >/dev/null 2>&1; then
+    resolved="$(dscacheutil -q host -a name "$fqdn" 2>/dev/null | awk '/^ip_address:/{print $2; exit}')"
+  fi
+  if [[ -z "$resolved" ]] && command -v getent >/dev/null 2>&1; then
+    resolved="$(getent ahostsv4 "$fqdn" 2>/dev/null | awk '{print $1; exit}')"
+  fi
+  if [[ -z "$resolved" ]] && command -v python3 >/dev/null 2>&1; then
+    resolved="$(
+      python3 -c "import socket; print(socket.getaddrinfo('${fqdn}', None, socket.AF_INET)[0][4][0])" 2>/dev/null || true
+    )"
+  fi
+
+  if [[ -z "$resolved" ]]; then
+    preflight_record warn "OPENCODE_FQDN ${fqdn} does not resolve on this host" \
+      "./scripts/setup.sh bootstrap  # or: sudo sh -c 'echo \"127.0.0.1 ${fqdn}\" >> /etc/hosts'"
+    printf '         Open: %s\n' "$url"
+    return
+  fi
+
+  case "$resolved" in
+    127.0.0.1|::1)
+      preflight_record ok "OPENCODE_FQDN ${fqdn} → ${resolved}"
+      ;;
+    *)
+      preflight_record warn "OPENCODE_FQDN ${fqdn} → ${resolved} (expected 127.0.0.1 on Docker host)" \
+        "./scripts/setup.sh bootstrap  # map ${fqdn} → 127.0.0.1 in /etc/hosts"
+      ;;
+  esac
+
+  if ! container_running; then
+    printf '         Open (when up): %s\n' "$url"
+    return
+  fi
+
+  local code curl_args=(
+    -s -o /dev/null -w '%{http_code}'
+    -u "$(opencode_auth)"
+    --connect-timeout 3 --max-time 8
+  )
+  # macOS often times out resolving *.local via mDNS even when /etc/hosts maps
+  # it — pin the IP we already resolved so the FQDN URL is still exercised.
+  if [[ -n "$resolved" ]]; then
+    curl_args+=(--resolve "${fqdn}:${port}:${resolved}")
+  fi
+  code="$(curl "${curl_args[@]}" "${url}/global/health" 2>/dev/null || true)"
+  code="${code:-000}"
+  if [[ "$code" == "200" ]]; then
+    preflight_record ok "local FQDN reachable" "$url"
+  elif [[ "$code" == "401" ]]; then
+    preflight_record warn "local FQDN responds (HTTP 401) — auth mismatch" "$url"
+  else
+    preflight_record warn "local FQDN not reachable (HTTP ${code})" \
+      "./scripts/setup.sh bootstrap  # hosts + container; Open: ${url}"
+  fi
 }
 
 check_workspace_mount() {
