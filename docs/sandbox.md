@@ -110,7 +110,10 @@ sandbox create --id feat-slug --worktree /absolute/path/to/repo
 sandbox exec --id feat-slug -- docker compose -f docker-compose.test.yml run --rm test
 sandbox status --id feat-slug
 sandbox destroy --id feat-slug
+# Localhost publish for the existing Cloudflare-tunnel flow:
 sandbox expose --id feat-slug --port 80 --hostname feat-slug.example.com
+# Or register a private host adapter on Traefik's shared Docker network:
+sandbox expose --id feat-slug --port 80 --hostname feat-slug.example.com --traefik
 sandbox unexpose --id feat-slug
 ```
 
@@ -139,7 +142,19 @@ Feature / production-like test stacks must boot **inside the Sysbox sibling** wi
 
 See the smoke fixture under `docker/sandbox/fixtures/compose-smoke/` for a minimal pattern.
 
-## Review URLs — host cloudflared + localhost publish
+## Review URLs — host Traefik adapter or Cloudflare localhost publish
+
+### Host Traefik adapter
+
+Use `sandbox expose --traefik` when the host runs Traefik with Docker provider access and an external `traefik-desktop` network. The helper starts on that network with a hostname-specific router/service and no host port mapping; it also joins Docker's `bridge` network solely to reach the Sysbox sibling listener. This preserves the inner app Compose isolation while making the hostname available through the existing host TLS edge.
+
+The nested app Compose must publish its private reverse proxy port (normally `80`) to the Sysbox sibling namespace. For example, BlocShed runs `docker compose -f docker-compose.test.yml --profile sysbox up -d --build`, then:
+
+```bash
+sandbox expose --id blocshed-feature --port 80 --hostname feature.blocshed.app --traefik
+```
+
+### Cloudflare localhost publish
 
 **One host tunnel is enough.** Install **`cloudflared` via apt/CLI on Ubuntu** (preferred over Docker cloudflared). Each feature’s nested Caddy is published to `127.0.0.1:<hostPort>` on the Docker host, and a **public hostname** on the existing tunnel points at that origin.
 

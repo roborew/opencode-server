@@ -32,7 +32,7 @@ Commands:
   exec   --id <slug> -- <command...>
   status --id <slug> | --all
   destroy --id <slug>           Unexpose then stop/remove sibling
-  expose --id <slug> --port <n> --hostname <fqdn> [--host-port <n>]
+  expose --id <slug> --port <n> --hostname <fqdn> [--host-port <n>] [--traefik]
   unexpose --id <slug>          Remove localhost publish helper only
   version                       Print CLI version
   help                          Show this help
@@ -459,15 +459,16 @@ cmd_unexpose() {
 }
 
 cmd_expose() {
-  local id="" port="" hostname="" host_port_arg=""
+  local id="" port="" hostname="" host_port_arg="" traefik=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --id) id="$2"; shift 2 ;;
       --port) port="$2"; shift 2 ;;
       --hostname) hostname="$2"; shift 2 ;;
       --host-port) host_port_arg="$2"; shift 2 ;;
+      --traefik) traefik=1; shift ;;
       -h|--help)
-        echo "sandbox expose --id <slug> --port <n> --hostname <fqdn> [--host-port <n>]"
+        echo "sandbox expose --id <slug> --port <n> --hostname <fqdn> [--host-port <n>] [--traefik]"
         return 0
         ;;
       *)
@@ -486,6 +487,10 @@ cmd_expose() {
   fi
   if [[ -n "$host_port_arg" && ! "$host_port_arg" =~ ^[0-9]+$ ]]; then
     echo "sandbox expose: --host-port must be a number" >&2
+    return 1
+  fi
+  if [[ "$traefik" == "1" && -n "$host_port_arg" ]]; then
+    echo "sandbox expose: --host-port cannot be used with --traefik" >&2
     return 1
   fi
   if [[ "${OPENCODE_SANDBOX_ENABLED:-0}" != "1" ]]; then
@@ -515,27 +520,49 @@ cmd_expose() {
     return 1
   fi
 
-  if [[ -n "$host_port_arg" ]]; then
+  local route_network="bridge"
+  if [[ "$traefik" == "1" ]]; then
+    route_network="traefik-desktop"
+  fi
+  local -a route_args=(
+    run -d
+    --name "$route"
+    --restart unless-stopped
+    --network "$route_network"
+    --label "opencode.sandbox=true"
+    --label "opencode.sandbox.route=true"
+    --label "opencode.sandbox.id=${id}"
+    --label "opencode.sandbox.publish=true"
+  )
+
+  if [[ "$traefik" == "1" ]]; then
+    local traefik_name
+    traefik_name="$(printf '%s' "${id}" | tr '[:upper:]_.' '[:lower:]--' | tr -cs 'a-z0-9-' '-')"
+    route_args+=(
+      --label "traefik.enable=true"
+      --label "traefik.docker.network=traefik-desktop"
+      --label "traefik.http.routers.opencode-sandbox-${traefik_name}.rule=Host(\`${hostname}\`)"
+      --label "traefik.http.routers.opencode-sandbox-${traefik_name}.entrypoints=websecure"
+      --label "traefik.http.routers.opencode-sandbox-${traefik_name}.tls=true"
+      --label "traefik.http.routers.opencode-sandbox-${traefik_name}.service=opencode-sandbox-${traefik_name}"
+      --label "traefik.http.services.opencode-sandbox-${traefik_name}.loadbalancer.server.port=80"
+    )
+    host_port="0"
+  elif [[ -n "$host_port_arg" ]]; then
     host_port="$host_port_arg"
-    publish_spec="127.0.0.1:${host_port}:80"
+    route_args+=(-p "*********:${host_port}:80")
   else
     host_port=""
     # Docker assigns an ephemeral host port; read it after start.
-    publish_spec="127.0.0.1::80"
+    route_args+=(-p "*********::80")
   fi
 
   docker rm -f "$route" >/dev/null 2>&1 || true
 
-  # Localhost publish helper: host cloudflared points tunnel public hostname → origin.
-  # Publishes container :80 → 127.0.0.1:<hostPort> on the Docker host.
-  if ! docker run -d \
-    --name "$route" \
-    --restart unless-stopped \
-    -p "$publish_spec" \
-    --label "opencode.sandbox=true" \
-    --label "opencode.sandbox.route=true" \
-    --label "opencode.sandbox.id=${id}" \
-    --label "opencode.sandbox.publish=true" \
+  # A route helper remains on the host daemon. In Traefik mode it joins the
+  # shared proxy network and keeps port 80 container-private; otherwise the
+  # existing Cloudflare-tunnel path publishes a loopback-only origin.
+  if ! docker "${route_args[@]}" \
     "$PUBLISH_IMAGE" \
     TCP-LISTEN:80,fork,reuseaddr "TCP:${sibling_ip}:${port}"; then
     echo "sandbox: failed to start publish helper ${route}" >&2
@@ -543,16 +570,27 @@ cmd_expose() {
     return 1
   fi
 
-  if [[ -z "$host_port" ]]; then
-    host_port="$(docker port "$route" 80/tcp 2>/dev/null | head -n1 | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p')"
-    if [[ -z "$host_port" ]]; then
+  if [[ "$traefik" == "1" ]]; then
+    # The Sysbox sibling itself lives on Docker's bridge network. Keep the
+    # adapter's primary endpoint on traefik-desktop for provider discovery,
+    # then add bridge only for its upstream TCP connection.
+    if ! docker network connect bridge "$route"; then
       docker rm -f "$route" >/dev/null 2>&1 || true
-      echo "sandbox: could not read published host port for ${route}" >&2
+      echo "sandbox: failed to connect ${route} to bridge for sibling access" >&2
       return 1
     fi
+    origin="traefik://traefik-desktop/${route}"
+  else
+    if [[ -z "$host_port" ]]; then
+      host_port="$(docker port "$route" 80/tcp 2>/dev/null | head -n1 | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p')"
+      if [[ -z "$host_port" ]]; then
+        docker rm -f "$route" >/dev/null 2>&1 || true
+        echo "sandbox: could not read published host port for ${route}" >&2
+        return 1
+      fi
+    fi
+    origin="http://*********:${host_port}"
   fi
-
-  origin="http://127.0.0.1:${host_port}"
   url="https://${hostname}"
 
   write_expose_state "$id" "$hostname" "$port" "$host_port" "$route" "$origin" "$url"
