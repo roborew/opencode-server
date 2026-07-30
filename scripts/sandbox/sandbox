@@ -2,7 +2,7 @@
 # sandbox — Sysbox sibling lifecycle for OpenCode (build/test + localhost publish expose).
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 STATE_DIR="${OPENCODE_SANDBOX_STATE_DIR:-${XDG_DATA_HOME:-/var/opencode-xdg}/sandboxes}"
 IMAGE="${OPENCODE_SANDBOX_IMAGE:-opencode-sandbox:local}"
 RUNTIME="${OPENCODE_SANDBOX_RUNTIME:-sysbox-runc}"
@@ -225,6 +225,24 @@ wait_nested_docker() {
     i=$((i + 1))
   done
   echo "sandbox: timed out waiting for nested dockerd in ${name}" >&2
+  return 1
+}
+
+wait_sibling_port() {
+  local id="$1"
+  local port="$2"
+  local name
+  name="$(container_name "$id")"
+  local i=0
+  while (( i < READY_TIMEOUT_SEC )); do
+    if docker exec "$name" bash -c "</dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    i=$((i + 1))
+  done
+  echo "sandbox preview: timed out waiting for ${name} port ${port}" >&2
+  echo "sandbox preview: ensure the app listens on the requested port before exposing it" >&2
   return 1
 }
 
@@ -655,6 +673,7 @@ cmd_preview() {
   cmd_exec --id "$id" -- test -f "$compose_file"
   cmd_exec --id "$id" -- \
     env "APP_SUBDOMAIN=${id}" docker compose -f "$compose_file" up -d --build
+  wait_sibling_port "$id" "$port"
   cmd_expose --id "$id" --port "$port" --hostname "$expected_hostname" --traefik
 }
 
