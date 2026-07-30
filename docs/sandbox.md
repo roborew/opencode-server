@@ -108,6 +108,9 @@ Inside the OpenCode container (when enabled):
 sandbox probe
 sandbox create --id feat-slug --worktree /absolute/path/to/repo
 sandbox exec --id feat-slug -- docker compose -f docker-compose.test.yml run --rm test
+# Deterministic Rails preview: APP_SUBDOMAIN=feat-slug and
+# https://feat-slug.blocshed.app are derived from the same sandbox ID.
+sandbox preview --id feat-slug --app-apex blocshed.app --compose-file docker-compose.test.yml --port 3000
 sandbox status --id feat-slug
 sandbox destroy --id feat-slug
 # Localhost publish for the existing Cloudflare-tunnel flow:
@@ -148,11 +151,15 @@ See the smoke fixture under `docker/sandbox/fixtures/compose-smoke/` for a minim
 
 Use `sandbox expose --traefik` when the host runs Traefik with Docker provider access and an external `traefik-desktop` network. The helper starts on that network with a hostname-specific router/service and no host port mapping; it also joins Docker's `bridge` network solely to reach the Sysbox sibling listener. This preserves the inner app Compose isolation while making the hostname available through the existing host TLS edge.
 
-The nested app Compose must publish its private reverse proxy port (normally `80`) to the Sysbox sibling namespace. For example, BlocShed runs `docker compose -f docker-compose.test.yml --profile sysbox up -d --build`, then:
+The nested app Compose must publish its application port to the Sysbox sibling namespace. For BlocShed, always use `sandbox preview`: it runs Compose with `APP_SUBDOMAIN` forced to the sandbox ID and derives the matching Traefik hostname. This prevents Rails host authorization from diverging from the route.
 
 ```bash
-sandbox expose --id blocshed-feature --port 80 --hostname feature.blocshed.app --traefik
+sandbox preview --id blocshed-feature --app-apex blocshed.app --compose-file docker-compose.test.yml --port 3000
+# Starts with APP_SUBDOMAIN=blocshed-feature and routes
+# https://blocshed-feature.blocshed.app through Traefik.
 ```
+
+Do not manually pair `sandbox exec ... docker compose up` with `sandbox expose` for BlocShed. `preview` rejects a supplied `--hostname` unless it exactly matches `<id>.<app-apex>`.
 
 ### Cloudflare localhost publish
 
