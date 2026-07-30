@@ -157,7 +157,7 @@ sandbox preview --id feature-slug --app-apex example.com --compose-file docker-c
 # Routes https://feature-slug.example.com through Traefik.
 ```
 
-The app repository owns application-specific environment variables, tenancy, and host authorization. A preview is not successful until a meaningful route and primary assets respond through the derived hostname.
+The sandbox preview sets `APP_SUBDOMAIN` to the preview id (e.g., `feature-slug`) as a reserved override; the app repository owns other application-specific environment variables, tenancy, and host authorization. A preview is not successful until a meaningful route and primary assets respond through the derived hostname.
 
 ### Cloudflare localhost publish
 

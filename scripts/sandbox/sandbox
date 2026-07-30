@@ -233,9 +233,15 @@ wait_sibling_port() {
   local port="$2"
   local name
   name="$(container_name "$id")"
+  local sibling_ip
+  sibling_ip="$(docker inspect -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$name" 2>/dev/null || true)"
+  if [[ -z "$sibling_ip" ]]; then
+    echo "sandbox preview: could not resolve IP for sibling ${name}" >&2
+    return 1
+  fi
   local i=0
   while (( i < READY_TIMEOUT_SEC )); do
-    if docker exec "$name" bash -c "</dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1; then
+    if docker run --rm --network bridge "$PUBLISH_IMAGE" -T 1 /dev/null "TCP:${sibling_ip}:${port}" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -673,7 +679,10 @@ cmd_preview() {
   cmd_exec --id "$id" -- test -f "$compose_file"
   cmd_exec --id "$id" -- \
     env "APP_SUBDOMAIN=${id}" docker compose -f "$compose_file" up -d --build
-  wait_sibling_port "$id" "$port"
+  if ! wait_sibling_port "$id" "$port"; then
+    cmd_unexpose --id "$id" >/dev/null 2>&1 || true
+    return 1
+  fi
   cmd_expose --id "$id" --port "$port" --hostname "$expected_hostname" --traefik
 }
 
