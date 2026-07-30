@@ -108,9 +108,9 @@ Inside the OpenCode container (when enabled):
 sandbox probe
 sandbox create --id feat-slug --worktree /absolute/path/to/repo
 sandbox exec --id feat-slug -- docker compose -f docker-compose.test.yml run --rm test
-# Deterministic Rails preview: APP_SUBDOMAIN=feat-slug and
-# https://feat-slug.blocshed.app are derived from the same sandbox ID.
-sandbox preview --id feat-slug --app-apex blocshed.app --compose-file docker-compose.test.yml --port 3000
+# Deterministic preview: the route hostname is derived from the sandbox ID
+# and preview waits until the requested app port is reachable.
+sandbox preview --id feat-slug --app-apex example.com --compose-file docker-compose.test.yml --port 3000
 sandbox status --id feat-slug
 sandbox destroy --id feat-slug
 # Localhost publish for the existing Cloudflare-tunnel flow:
@@ -138,10 +138,9 @@ Feature / production-like test stacks must boot **inside the Sysbox sibling** wi
 
 `docker-compose.test.yml` (or documented equivalent) should:
 
-- Use a **private** compose network only.
-- Include **Caddy** (or equivalent) reverse-proxying to app service(s).
-- **Publish Caddy `:80`** so the sibling exposes that port (TLS terminates at Cloudflare).
-- Rely on the **host** cloudflared tunnel (do not add cloudflared to compose).
+- Use the app’s documented private service topology.
+- Publish the app listener port that will be passed to `sandbox preview`.
+- Do not add cloudflared to compose; any edge integration remains host-managed.
 
 See the smoke fixture under `docker/sandbox/fixtures/compose-smoke/` for a minimal pattern.
 
@@ -151,15 +150,14 @@ See the smoke fixture under `docker/sandbox/fixtures/compose-smoke/` for a minim
 
 Use `sandbox expose --traefik` when the host runs Traefik with Docker provider access and an external `traefik-desktop` network. The helper starts on that network with a hostname-specific router/service and no host port mapping; it also joins Docker's `bridge` network solely to reach the Sysbox sibling listener. This preserves the inner app Compose isolation while making the hostname available through the existing host TLS edge.
 
-The nested app Compose must publish its application port to the Sysbox sibling namespace. For BlocShed, always use `sandbox preview`: it runs Compose with `APP_SUBDOMAIN` forced to the sandbox ID and derives the matching Traefik hostname. This prevents Rails host authorization from diverging from the route.
+The nested app Compose must publish its application port to the Sysbox sibling namespace. Use `sandbox preview` rather than manually pairing Compose startup with `sandbox expose`; it derives `<id>.<app-apex>`, waits for the requested port, and then creates the matching Traefik route.
 
 ```bash
-sandbox preview --id blocshed-feature --app-apex blocshed.app --compose-file docker-compose.test.yml --port 3000
-# Starts with APP_SUBDOMAIN=blocshed-feature and routes
-# https://blocshed-feature.blocshed.app through Traefik.
+sandbox preview --id feature-slug --app-apex example.com --compose-file docker-compose.test.yml --port 3000
+# Routes https://feature-slug.example.com through Traefik.
 ```
 
-Do not manually pair `sandbox exec ... docker compose up` with `sandbox expose` for BlocShed. `preview` rejects a supplied `--hostname` unless it exactly matches `<id>.<app-apex>`.
+The sandbox preview sets `APP_SUBDOMAIN` to the preview id (e.g., `feature-slug`) as a reserved override; the app repository owns other application-specific environment variables, tenancy, and host authorization. A preview is not successful until a meaningful route and primary assets respond through the derived hostname.
 
 ### Cloudflare localhost publish
 
