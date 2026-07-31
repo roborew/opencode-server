@@ -42,7 +42,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-pip \
     ripgrep \
-    socat \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
@@ -86,9 +85,6 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
-
-# uv (dash-api MCP)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Infisical CLI (deb on Ubuntu)
 RUN ARCH="$(dpkg --print-architecture)" \
@@ -154,7 +150,7 @@ RUN chmod +x /usr/local/bin/opencode-entrypoint.sh \
 # Runtime data dirs are NOT baked into the image — the entrypoint (as root)
 # chowns them to OPENCODE_UID:GID then drops privileges before serve.
 
-EXPOSE 4097 19876
+EXPOSE 4097
 
 # Starts as root (no Dockerfile USER / compose user:). Entrypoint chowns
 # volumes then runuser-drops to OPENCODE_UID:OPENCODE_GID (host user).

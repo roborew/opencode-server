@@ -51,10 +51,9 @@ Also resolvable: `opencode-server` and compose service name `opencode` (same IP)
 | Port | Role |
 | ---- | ---- |
 | **4097** | OpenCode (host publish + container listen) — chosen to avoid Kilo/`4096` |
-| **19876** | MCP OAuth callback (host `127.0.0.1` only by default; socat → container loopback) |
 | 4096 | Leave free for Kilo / other tools |
 
-Set `OPENCODE_PUBLISH_PORT=4097` in `.env` (default in compose). Override publish bind with `OPENCODE_OAUTH_CALLBACK_PUBLISH` if needed.
+Set `OPENCODE_PUBLISH_PORT=4097` in `.env` (default in compose).
 
 ## Localhost on the Docker host
 

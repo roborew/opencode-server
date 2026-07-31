@@ -17,12 +17,14 @@ if [[ "$(id -u)" -eq 0 ]]; then
   # Named volume only — safe to recurse.
   fix_as_root /var/lib/opencode-data
   fix_as_root /home/opencode
-  # XDG dir itself (not -R): worktree is a host bind mount and can be huge;
-  # recursive chown there blocks startup for minutes.
+  # Keep the XDG state tree writable while avoiding recursive ownership changes
+  # on the worktree host bind, which can be large.
   mkdir -p /var/opencode-xdg/opencode /var/opencode-xdg/sandboxes
-  chown "${OPENCODE_UID}:${OPENCODE_GID}" /var/opencode-xdg 2>/dev/null || true
-  chown "${OPENCODE_UID}:${OPENCODE_GID}" /var/opencode-xdg/opencode 2>/dev/null || true
-  chown "${OPENCODE_UID}:${OPENCODE_GID}" /var/opencode-xdg/sandboxes 2>/dev/null || true
+  chown "${OPENCODE_UID}:${OPENCODE_GID}" \
+    /var/opencode-xdg /var/opencode-xdg/opencode /var/opencode-xdg/sandboxes \
+    2>/dev/null || true
+  find /var/opencode-xdg/opencode -path /var/opencode-xdg/opencode/worktree -prune -o \
+    -exec chown "${OPENCODE_UID}:${OPENCODE_GID}" {} + 2>/dev/null || true
   # Do not chown OPENCODE_WORKTREES_DIR / OPENCODE_APPS_DIR — host-owned binds.
 
   # macOS host GIDs (e.g. staff=20) may not exist in the Ubuntu image's
@@ -211,26 +213,6 @@ if [[ -n "${CODERABBIT_API_KEY:-}" ]]; then
   coderabbit auth login --api-key "${CODERABBIT_API_KEY}" 2>/dev/null || true
 fi
 
-# MCP OAuth listens on 127.0.0.1:19876 inside the container. Host browsers (and
-# SSH -L tunnels) hit the published eth0 port, so bridge eth IP → loopback.
-start_oauth_callback_proxy() {
-  local port="${OPENCODE_OAUTH_CALLBACK_PORT:-19876}"
-  local eth_ip
-  eth_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  if [[ -z "$eth_ip" ]]; then
-    echo "opencode-entrypoint: warn: no eth IP; MCP OAuth host callback proxy disabled" >&2
-    return 0
-  fi
-  if ! command -v socat >/dev/null 2>&1; then
-    echo "opencode-entrypoint: warn: socat missing; MCP OAuth host callback proxy disabled" >&2
-    return 0
-  fi
-  setsid socat "TCP-LISTEN:${port},bind=${eth_ip},fork,reuseaddr" "TCP:127.0.0.1:${port}" \
-    >/dev/null 2>&1 &
-  echo "opencode-entrypoint: MCP OAuth callback proxy ${eth_ip}:${port} → 127.0.0.1:${port}" >&2
-}
-
-start_oauth_callback_proxy
 
 # Git author/committer for agent commits (GIT_USER_* or GIT_AUTHOR_* from .env / Infisical).
 # Also re-applied in opencode-serve-guarded.sh after Infisical inject.

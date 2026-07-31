@@ -29,8 +29,8 @@ When OPENCODE_SANDBOX_ENABLED=0 / probe unavailable: soft-skip; no invented dock
 | Concern | Owner | Agent |
 | Host cloudflared (one tunnel) | Human / docs/sandbox.md | Never install; never tunnel create |
 | Localhost publish for sandbox | sandbox expose/unexpose | Call CLI only — returns origin + host_port |
-| Tunnel public hostname {slug}.{apex} → origin | cloudflare-api MCP | Upsert/delete on **existing** tunnel |
-| DNS {slug}.{apex} | cloudflare-api MCP (+ cloudflare skill) | Upsert/delete CNAME when OPENCODE_SANDBOX_REVIEW_DNS=on |
+| Tunnel public hostname {slug}.{apex} → origin | cloudflare-api via MCPJungle | Upsert/delete on **existing** tunnel |
+| DNS {slug}.{apex} | cloudflare-api via MCPJungle (+ cloudflare skill) | Upsert/delete CNAME when OPENCODE_SANDBOX_REVIEW_DNS=on |
 | App .env / Infisical | setup create+paste + worktree-env | Gate only; no .env.example |
 
 ## Product workflow
@@ -45,7 +45,7 @@ When OPENCODE_SANDBOX_ENABLED=0 / probe unavailable: soft-skip; no invented dock
 3. permission.skill docker-sandbox on developer, frontend-dev, verifier, preflight
 4. Orchestrate routing: agents/orchestrate.md + skills/orchestrate-execution — instruct Tasks to load docker-sandbox (orchestrate never loads it)
 5. CONTEXT / RUNBOOK / capability matrix — Sandbox, Review hostname, App vs server Infisical, rebuild after CONFIG_REF
-6. Note in RUNBOOK: review-app path is docker-sandbox + cloudflare-api (DNS + existing tunnel hostname)
+6. Note in RUNBOOK: review-app path is docker-sandbox + cloudflare-api via MCPJungle (DNS + existing tunnel hostname)
 
 ## Acceptance
 - Skill states: expose = localhost publish CLI; CF = tunnel hostname + DNS optional; no tunnel create

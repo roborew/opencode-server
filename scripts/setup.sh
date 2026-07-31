@@ -24,7 +24,6 @@ Commands:
   (default)           Configure sandbox mode, preflight, then amend projects + bootstrap
   preflight           Run preflight checks only (includes sandbox configure)
   sandbox             Probe/configure Sysbox sandbox mode only (OPENCODE_SANDBOX_MODE)
-  mcp-auth <server>   Re-auth an MCP (e.g. cloudflare-api) — disconnect, OAuth, reconnect
   projects local      Amend local OPENCODE_APPS_DIR set; ensure work branch checkout
   projects github     List GH_ORG repos, clone chosen ones onto work branch, amend set
   bootstrap           Hosts entry + print open links
@@ -57,7 +56,6 @@ Wipe Docker server DB/auth only (keeps Desktop + repos + host worktrees):
 Examples:
   ./scripts/setup.sh
   ./scripts/setup.sh sandbox
-  ./scripts/setup.sh mcp-auth cloudflare-api
   ./scripts/setup.sh projects local
   ./scripts/setup.sh projects local --all --yes
   ./scripts/setup.sh bootstrap --yes
@@ -73,7 +71,6 @@ YES=0
 INCLUDE_ARCHIVED=0
 COMMAND=""
 PROJECT_MODE=""
-MCP_AUTH_SERVER=""
 AUTO_HOSTS_PREFLIGHT="${AUTO_HOSTS_PREFLIGHT:-1}"
 PREFLIGHT_HOSTS_PREPARED=0
 
@@ -82,12 +79,6 @@ parse_args() {
     case "$1" in
       preflight) COMMAND="preflight"; shift ;;
       sandbox) COMMAND="sandbox"; shift ;;
-      mcp-auth)
-        COMMAND="mcp-auth"
-        MCP_AUTH_SERVER="${2:-}"
-        [[ -n "$MCP_AUTH_SERVER" ]] && shift
-        shift
-        ;;
       bootstrap) COMMAND="bootstrap"; shift ;;
       projects)
         COMMAND="projects"
@@ -489,42 +480,6 @@ sync_projects() {
   fi
 }
 
-run_mcp_auth() {
-  local name="${1:-}"
-  if [[ -z "$name" ]]; then
-    echo "Usage: ./scripts/setup.sh mcp-auth <server-name>" >&2
-    echo "Example: ./scripts/setup.sh mcp-auth cloudflare-api" >&2
-    exit 1
-  fi
-  if ! container_running; then
-    echo "Container ${CONTAINER_NAME} is not running." >&2
-    exit 1
-  fi
-  load_env || true
-  echo "Re-authenticating mcp/${name} (close OpenCode Desktop during OAuth)."
-  if [[ "$name" == "cloudflare-api" ]]; then
-    echo "Grant Zone DNS Edit + Tunnel Edit on the existing host tunnel (public hostnames). Do not require Tunnel Create."
-  fi
-  echo "Browser must reach 127.0.0.1:19876 (local or ssh -L)."
-  mcp_clear_pending_oauth "$name" || true
-  mcp_ensure_oauth_callback_free || true
-  docker_exec_xdg_it opencode mcp auth "$name" || true
-  echo "Reconnecting mcp/${name} on the OpenCode server…"
-  mcp_server_reconnect "$name"
-  local status
-  status="$(mcp_status_for "$name")"
-  if [[ ! "$status" =~ ^(connected|ready|ok)$ ]] && mcp_cli_connected "$name"; then
-    status="connected"
-  fi
-  if [[ "$status" =~ ^(connected|ready|ok)$ ]]; then
-    echo "mcp/${name}: authenticated (${status})"
-  else
-    echo "mcp/${name}: still ${status}" >&2
-    echo "Debug: docker exec -it -e XDG_DATA_HOME=/var/opencode-xdg ${CONTAINER_NAME} opencode mcp debug ${name}" >&2
-    exit 1
-  fi
-}
-
 run_bootstrap_only() {
   load_env || true
   if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
@@ -562,9 +517,6 @@ main() {
     sandbox)
       configure_sandbox_mode
       exit $?
-      ;;
-    mcp-auth)
-      run_mcp_auth "$MCP_AUTH_SERVER"
       ;;
     preflight)
       configure_sandbox_mode || [[ "$FORCE" == "1" ]] || exit 1

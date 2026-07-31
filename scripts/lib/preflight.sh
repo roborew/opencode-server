@@ -11,13 +11,11 @@ source "${SCRIPT_LIB_DIR}/sandbox-enable.sh"
 source "${SCRIPT_LIB_DIR}/repo-env.sh"
 
 PREFLIGHT_JSON_MODE="${PREFLIGHT_JSON_MODE:-0}"
-PREFLIGHT_INTERACTIVE_AUTH="${PREFLIGHT_INTERACTIVE_AUTH:-1}"
 
 run_preflight() {
   PREFLIGHT_OK=0
   PREFLIGHT_WARN=0
   PREFLIGHT_FAIL=0
-  PREFLIGHT_MCP_NEEDS_AUTH=()
   PREFLIGHT_PUBLIC_URL=""
 
   echo "Preflight"
@@ -744,9 +742,8 @@ for name, info in sorted(data.items()):
         preflight_record ok "mcp/${name}: ${status}"
         ;;
       needs_auth|needs_client_registration|authenticating)
-        PREFLIGHT_MCP_NEEDS_AUTH+=("$name")
         preflight_record fail "mcp/${name}: ${status}" \
-          "./scripts/setup.sh preflight  # or: docker exec -it -e XDG_DATA_HOME=/var/opencode-xdg ${CONTAINER_NAME} opencode mcp auth ${name}"
+          "configure the upstream authentication in MCPJungle, then reconnect mcp/${name}"
         ;;
       *)
         if [[ "$name" == "docs-mcp-server" ]]; then
@@ -760,9 +757,6 @@ for name, info in sorted(data.items()):
     esac
   done <<< "$mcp_report"
 
-  if [[ ${#PREFLIGHT_MCP_NEEDS_AUTH[@]} -gt 0 && "$PREFLIGHT_INTERACTIVE_AUTH" == "1" ]]; then
-    offer_mcp_auth
-  fi
 }
 
 check_docs_mcp_reachability() {
@@ -797,38 +791,6 @@ check_claude_context() {
   fi
 }
 
-offer_mcp_auth() {
-  for name in "${PREFLIGHT_MCP_NEEDS_AUTH[@]}"; do
-    echo
-    read -r -p "Authenticate mcp/${name} now? [y/N] " answer
-    if [[ "$answer" =~ ^[Yy]$ ]]; then
-      echo "Close OpenCode Desktop during this auth (Desktop click OAuth is unreliable here)."
-      echo "Open the authorize URL in a browser that can reach 127.0.0.1:19876"
-      echo "  Local host: use this machine's browser"
-      echo "  Remote/DO: ssh -N -L 19876:127.0.0.1:19876 user@host  (then use the laptop browser)"
-      # Stale PKCE + serve holding :19876 caused CSRF / tokens in the wrong store.
-      mcp_clear_pending_oauth "$name" || true
-      mcp_ensure_oauth_callback_free || true
-      docker_exec_xdg_it opencode mcp auth "$name" || true
-      # Auth writes tokens to disk; serve process needs an MCP reconnect to pick them up.
-      echo "Reconnecting mcp/${name} on the OpenCode server…"
-      mcp_server_reconnect "$name"
-      local status
-      status="$(mcp_status_for "$name")"
-      if [[ ! "$status" =~ ^(connected|ready|ok)$ ]] && mcp_cli_connected "$name"; then
-        status="connected"
-      fi
-      if [[ "$status" =~ ^(connected|ready|ok)$ ]]; then
-        preflight_record ok "mcp/${name}: authenticated (${status})"
-        PREFLIGHT_FAIL=$((PREFLIGHT_FAIL - 1))
-      else
-        preflight_record fail "mcp/${name}: still ${status}" \
-          "docker exec -it -e XDG_DATA_HOME=/var/opencode-xdg ${CONTAINER_NAME} opencode mcp debug ${name}"
-      fi
-    fi
-  done
-}
-
 print_preflight_json() {
   python3 -c "
 import json
@@ -836,7 +798,6 @@ print(json.dumps({
     'ok': ${PREFLIGHT_OK},
     'warn': ${PREFLIGHT_WARN},
     'fail': ${PREFLIGHT_FAIL},
-    'mcp_needs_auth': $(printf '%s\n' "${PREFLIGHT_MCP_NEEDS_AUTH[@]:-}" | python3 -c "import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))" 2>/dev/null || echo '[]'),
 }))
 "
 }

@@ -38,7 +38,6 @@ Do **not** bake secrets into the Docker image. Do **not** permanently `infisical
 | `CONFIG_REPO`, `CONFIG_REF` | GitHub config clone at build time |
 | `COMPOSE_PROFILES` | Default `milvus` starts etcd/minio/milvus; clear to run OpenCode without the vector stack |
 | `OPENCODE_PUBLISH_PORT` | Host port for OpenCode (default `4097`; avoid `4096` — Kilo) |
-| `OPENCODE_OAUTH_CALLBACK_PUBLISH` | Host bind for MCP OAuth callback (default `127.0.0.1:19876`) |
 | `OPENCODE_FQDN` | Canonical hostname for Twingate + local browser. Set in Infisical (compose network alias) **and/or** host `.env` (preflight / `/etc/hosts`). If host unset, preflight reads the running container’s network alias. Code fallback only: `opencode.local` |
 | `OPENCODE_APPS_DIR` | Host path for git repos — same-path bind (default `${HOME}/projects`; absolute path required) |
 | `OPENCODE_REPO_ENV_SKIP` | Comma-separated basename globs skipped by per-repo `.env` checks (default `*-spec`). Empty = check all repos |

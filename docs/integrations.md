@@ -74,68 +74,10 @@ Checks print `[ok]`, `[warn]`, or `[fail]` with fix hints. Failures block projec
 | GitHub | `gh auth status`; fine-grained via capability checks, or classic scopes; `GH_ORG` + repo list access |
 | CodeRabbit | `coderabbit auth status` when `CODERABBIT_API_KEY` is set |
 | Providers | `OPENROUTER_API_KEY` or connected providers |
-| MCPs | `GET /mcp` for each enabled server (claude-context, docs-mcp-server, OAuth MCPs) |
+| MCPs | `GET /mcp` for each enabled server (`mcpjungle`, `claude-context`, `docs-mcp-server`) |
 
-## MCP OAuth (e.g. Cloudflare)
+## Managed MCP upstreams
 
-**Preferred path:** keep OpenCode Desktop closed, run `./scripts/setup.sh` (or `./scripts/setup.sh preflight`), and answer **y** when preflight offers `Authenticate mcp/cloudflare-api`. That writes tokens into the Docker `opencode-data` volume and reconnects the server — Desktop then shows Cloudflare connected. Desktop’s in-app Cloudflare click is unreliable against this Docker server; use setup.
+`mcpjungle` is the sole gateway for managed upstreams, including Cloudflare API and Cloudflare Docs. OpenCode only carries the MCPJungle bearer token; upstream credentials and any OAuth grants are registered, stored, and refreshed in MCPJungle.
 
-OpenCode starts a short-lived callback listener on **`127.0.0.1:19876` inside the container**. The image bridges that to the container eth IP via `socat`, and compose publishes **`127.0.0.1:19876` on the host** (loopback-only — not the public internet).
-
-| Where you run the stack | How the browser reaches the callback |
-| ----------------------- | ------------------------------------ |
-| **Local Docker host** | Open the printed authorize URL; Cloudflare redirects to `http://127.0.0.1:19876/...` on that host → Docker → container |
-| **Remote host (e.g. VPS)** | From your **laptop**, keep an SSH tunnel open, then auth in that same browser session: `ssh -N -L 19876:127.0.0.1:19876 user@host` |
-
-```bash
-# Prefer setup/preflight (sets XDG + clears stuck OAuth state):
-./scripts/setup.sh preflight
-
-# Manual equivalent (XDG must match serve — compose sets this; pass -e if unsure):
-docker exec -it -e XDG_DATA_HOME=/var/opencode-xdg opencode-server opencode mcp auth <server-name>
-docker exec -e XDG_DATA_HOME=/var/opencode-xdg opencode-server opencode mcp debug <server-name>
-docker exec -e XDG_DATA_HOME=/var/opencode-xdg opencode-server opencode mcp list
-```
-
-Tokens persist in the `opencode-data` volume (`mcp-auth.json` under container `XDG_DATA_HOME=/var/opencode-xdg`). Preflight runs auth with that XDG, clears incomplete PKCE state, and restarts the container if `opencode serve` is already holding `:19876` (otherwise the browser callback hits the wrong process → “Invalid or expired state parameter”).
-
-After a successful `opencode mcp auth`, the long-running `opencode serve` process may still show `needs_auth` until the MCP transport is reconnected. Preflight does this automatically; manually:
-
-```bash
-curl -sf -u "opencode:YOUR_PASSWORD" -X POST http://127.0.0.1:4097/mcp/cloudflare-api/disconnect
-curl -sf -u "opencode:YOUR_PASSWORD" -X POST http://127.0.0.1:4097/mcp/cloudflare-api/connect
-# or: docker compose restart opencode
-```
-
-Do **not** set `OPENCODE_OAUTH_CALLBACK_PUBLISH=0.0.0.0:19876` on a public droplet unless you intentionally expose the OAuth callback port.
-
-### Cloudflare OAuth permissions (recommended)
-
-On the Cloudflare authorize screen, grant **least privilege** for agent work. Prefer specific zones over “all zones” when the UI allows it.
-
-| Scope / permission | Access | Purpose |
-| ------------------ | ------ | ------- |
-| **Zone → DNS** | **Edit** (Write) | Create/update/delete DNS records for review hostnames |
-| **Account → Cloudflare Tunnel** (or Zero Trust tunnel) | **Edit** on the **existing** tunnel only | Upsert/delete public hostnames → `http://127.0.0.1:<hostPort>` for sandbox review |
-| Zone → Zone | Read | List zones / zone metadata |
-| Account → Account Settings (or Account Resources) | Read | Discover account ID / list accounts |
-| Workers Scripts, KV, R2, D1, Pages, Firewall, … | Read (optional) | Inspect config without changing it |
-
-**Usually skip (unless you explicitly need them):** Billing, User Admin, Account Edit, Workers Scripts Edit, Firewall Edit, Access Edit, SSL/TLS Edit, Cache Purge, **Tunnel Create** (one host tunnel already exists — do not create more) — those are high-impact writes.
-
-**Add later if needed:**
-
-| Extra permission | When |
-| ---------------- | ---- |
-| Workers Scripts Edit | Deploy or update Workers from the agent |
-| Workers KV / D1 / R2 Edit | Mutate storage from the agent |
-| Page Rules / Cache Purge | Cache or routing changes |
-| Firewall / WAF Edit | Security rule changes |
-
-Re-run after changing scopes:
-
-```bash
-./scripts/setup.sh mcp-auth cloudflare-api
-```
-
-Or revoke the prior grant in the Cloudflare dashboard, then re-auth.
+Keep `docs-mcp-server` and `claude-context` as the two local exceptions. Do not run `opencode mcp auth` in this container for a managed upstream. If its status is `needs_auth`, repair the upstream registration or authorization in MCPJungle, then reconnect or restart the OpenCode service.

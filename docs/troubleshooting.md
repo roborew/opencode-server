@@ -15,7 +15,7 @@
 | localhost link 404 from agent | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
 | Projects not in picker | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `$OPENCODE_APPS_DIR/...` |
 | Host cannot resolve OPENCODE_FQDN | `./scripts/setup.sh bootstrap` or add `127.0.0.1 opencode.local` (or your FQDN) to `/etc/hosts` |
-| MCP needs auth (Cloudflare etc.) | Close Desktop; `./scripts/setup.sh preflight` and auth when prompted. Manual: `docker exec -it -e XDG_DATA_HOME=/var/opencode-xdg opencode-server opencode mcp auth <name>` then reconnect `/mcp/<name>/connect`. CSRF/state errors ⇒ serve held `:19876` or stale PKCE — re-run preflight (it clears + restarts). |
+| Managed MCP needs auth | Repair the upstream authorization in MCPJungle, then reconnect or restart OpenCode. Do not run `opencode mcp auth` in this container. |
 | Twingate can't reach server | Resource = `OPENCODE_FQDN` (default `opencode.local`), TCP `4097`; do **not** set `TWINGATE_DNS` to public DNS; connector + OpenCode on `opencode-net` |
 | Port conflict with Kilo | OpenCode uses **4097**; leave 4096 for Kilo |
 | Provider auth missing | Fresh `opencode-data` volume — set API keys in `.env`/Infisical or migrate auth data |
@@ -30,4 +30,4 @@
 | Expose: publish helper failed | Ensure `OPENCODE_SANDBOX_ROUTE_IMAGE` is pullable; sibling must publish Caddy port; check `sandbox expose` JSON for `origin` |
 | Expose: review URL 502 | Upsert tunnel public hostname → `origin` from expose JSON; confirm host cloudflared is running |
 | Repo sandbox build lacks secrets | `./scripts/setup.sh projects local` — create `.env` + paste Infisical vars (not `.env.example`) |
-| Cloudflare DNS / tunnel hostname denied | `./scripts/setup.sh mcp-auth cloudflare-api` — grant Zone DNS Edit + Tunnel Edit on the existing tunnel (not Tunnel Create) |
+| Cloudflare DNS / tunnel hostname denied | Update the Cloudflare API upstream authorization in MCPJungle with Zone DNS Edit and Tunnel Edit on the existing tunnel (not Tunnel Create), then retry through `mcpjungle`. |

@@ -190,11 +190,7 @@ sandbox unexpose --id blockshed
 sandbox destroy --id blockshed   # unexpose first
 ```
 
-**Cloudflare MCP scopes:** Zone **DNS Edit**, plus permission to manage **public hostnames on the existing tunnel** (Tunnel Edit on that tunnel — still no Tunnel Create). Re-auth after changing scopes:
-
-```bash
-./scripts/setup.sh mcp-auth cloudflare-api
-```
+**Cloudflare MCP scopes:** the `cloudflare-api` upstream registered in MCPJungle needs Zone **DNS Edit**, plus permission to manage **public hostnames on the existing tunnel** (Tunnel Edit on that tunnel — still no Tunnel Create). Update its MCPJungle authorization after changing scopes.
 
 ## App Infisical / `.env` for sandbox builds
 

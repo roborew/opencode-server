@@ -74,7 +74,7 @@ Connect remotely (with Twingate): `http://opencode.local:4097` or `opencode atta
 | Setup script, projects, workspaces | [docs/setup.md](docs/setup.md) |
 | Environment variables & Infisical | [docs/environment.md](docs/environment.md) |
 | Twingate, ports, hosts, localhost rewrite | [docs/access.md](docs/access.md) |
-| Claude Context, GitHub, CodeRabbit, MCP OAuth | [docs/integrations.md](docs/integrations.md) |
+| Claude Context, GitHub, CodeRabbit, managed MCP upstreams | [docs/integrations.md](docs/integrations.md) |
 | Sysbox sibling sandboxes (Ubuntu) | [docs/sandbox.md](docs/sandbox.md) |
 | Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Docs index | [docs/README.md](docs/README.md) |
@@ -86,7 +86,7 @@ Connect remotely (with Twingate): `http://opencode.local:4097` or `opencode atta
 ├── Dockerfile
 ├── docker-compose.yml
 ├── docker-compose.sandbox.yml   # Optional Ubuntu overlay
-├── scripts/setup.sh             # preflight + projects + bootstrap + mcp-auth
+├── scripts/setup.sh             # preflight + projects + bootstrap
 ├── scripts/compose.sh           # Infisical-injected docker compose wrapper
 ├── scripts/doctor-perf.sh
 ├── scripts/sandbox/             # sandbox CLI + build/smoke
