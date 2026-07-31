@@ -87,13 +87,13 @@ if [[ -z "$project_id" || -z "$domain" ]]; then
   exit 1
 fi
 
-# Map short names used in this repo to Infisical CLI universal-auth env vars.
-if [[ -n "${INFISICAL_CLIENT_ID:-}" && -z "${INFISICAL_UNIVERSAL_AUTH_CLIENT_ID:-}" ]]; then
-  export INFISICAL_UNIVERSAL_AUTH_CLIENT_ID="${INFISICAL_CLIENT_ID}"
+# This project's .env is authoritative. Do not let credentials inherited from a
+# terminal session select a different Infisical identity or project.
+if ! grep -qE '^[[:space:]]*INFISICAL_TOKEN=' "${REPO_ROOT}/.env"; then
+  unset INFISICAL_TOKEN
 fi
-if [[ -n "${INFISICAL_CLIENT_SECRET:-}" && -z "${INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET:-}" ]]; then
-  export INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET="${INFISICAL_CLIENT_SECRET}"
-fi
+export INFISICAL_UNIVERSAL_AUTH_CLIENT_ID="${INFISICAL_CLIENT_ID:-}"
+export INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET="${INFISICAL_CLIENT_SECRET:-}"
 
 token="${INFISICAL_TOKEN:-}"
 if [[ -z "$token" ]]; then
