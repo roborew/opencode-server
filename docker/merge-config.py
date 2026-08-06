@@ -19,13 +19,6 @@ def deep_merge(base: dict, overlay: dict) -> dict:
 
 
 def apply_env_overrides(overlay: dict) -> dict:
-    docs_url = os.environ.get("DOCS_MCP_URL", "").strip()
-    if docs_url:
-        overlay.setdefault("mcp", {}).setdefault("docs-mcp-server", {})
-        overlay["mcp"]["docs-mcp-server"]["type"] = "remote"
-        overlay["mcp"]["docs-mcp-server"]["enabled"] = True
-        overlay["mcp"]["docs-mcp-server"]["url"] = docs_url
-
     # Allow host same-path apps + worktree mounts (no /workspace legacy path).
     ext = overlay.setdefault("permission", {}).setdefault("external_directory", {})
     ext.setdefault("/var/opencode-xdg/opencode/worktree/**", "allow")

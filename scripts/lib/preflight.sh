@@ -746,9 +746,7 @@ for name, info in sorted(data.items()):
           "configure the upstream authentication in MCPJungle, then reconnect mcp/${name}"
         ;;
       *)
-        if [[ "$name" == "docs-mcp-server" ]]; then
-          check_docs_mcp_reachability "$status" "$name"
-        elif [[ "$name" == "claude-context" ]]; then
+        if [[ "$name" == "claude-context" ]]; then
           check_claude_context "$status" "$name"
         else
           preflight_record warn "mcp/${name}: ${status}"
@@ -757,24 +755,6 @@ for name, info in sorted(data.items()):
     esac
   done <<< "$mcp_report"
 
-}
-
-check_docs_mcp_reachability() {
-  local status="$1"
-  local name="$2"
-  local url
-  url="$(container_env_get DOCS_MCP_URL)"
-  if [[ -z "$url" ]]; then
-    preflight_record warn "mcp/${name}: ${status} (docs MCP URL not configured in container)" \
-      "set DOCS_MCP_URL in .env or Infisical"
-    return
-  fi
-  if docker_exec curl -sf --max-time 5 "$url" >/dev/null 2>&1; then
-    preflight_record ok "mcp/${name}: reachable"
-  else
-    preflight_record warn "docs MCP unreachable from container" \
-      "start docs MCP on host or fix URL (${url})"
-  fi
 }
 
 check_claude_context() {

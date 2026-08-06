@@ -10,8 +10,9 @@
 | Claude Context fails | `OPENAI_API_KEY` set; Milvus healthy on `milvus-standalone:19530` inside network; `COMPOSE_PROFILES=milvus` |
 | Want lighter stack (no Milvus) | Clear profile: `COMPOSE_PROFILES= docker compose up -d`. Re-enable with `COMPOSE_PROFILES=milvus`. |
 | Workspace create/delete times out | Ensure `OPENCODE_EXPERIMENTAL_WORKSPACES=true` (compose default). Without it, OpenCode never emits `workspace.status` and the API fails after 5s. Rebuild/restart after changing. |
+| Container says `Up` but port 4097 gives an empty reply / health is `unhealthy` | The OpenCode upstream died (often an OOM) while the delete guard remained up. Current images exit the container when either child dies, so Docker restarts it. On an older image, recover with `./scripts/compose.sh up -d --force-recreate opencode`; then rebuild to pick up supervision. Inspect `docker inspect opencode-server --format '{{.State.OOMKilled}}'` and `journalctl -k --no-pager | grep -i 'Killed process.*opencode'`. |
+| OpenCode is OOM-killed | A runaway upstream reached the container memory ceiling. Confirm with the commands above, inspect current usage with `docker stats --no-stream opencode-server`, and only raise `OPENCODE_MEMORY_LIMIT` / `OPENCODE_MEMORY_SWAP_LIMIT` after investigating the workload or enabled MCPs. |
 | Deleting a “sandbox” wiped the app repo | Delete-guard blocks DELETE under `OPENCODE_APPS_DIR`; only worktree-store paths are removable. |
-| docs-mcp-server fails | Set `DOCS_MCP_URL` to a host the container can reach (`host.docker.internal` if on the Docker host, or LAN IP) |
 | localhost link 404 from agent | Loopback rewrite is on by default; ensure the service is reachable from Docker via `host.docker.internal`; set `LOCALHOST_REWRITE=0` to disable |
 | Projects not in picker | Run `./scripts/setup.sh projects local`; open via printed deep links or `+` with `$OPENCODE_APPS_DIR/...` |
 | Host cannot resolve OPENCODE_FQDN | `./scripts/setup.sh bootstrap` or add `127.0.0.1 opencode.local` (or your FQDN) to `/etc/hosts` |

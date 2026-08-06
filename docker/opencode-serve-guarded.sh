@@ -56,5 +56,32 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   fi
   sleep 0.5
 done
-trap 'kill "$upstream_pid" 2>/dev/null || true' EXIT
-exec python3 /usr/local/bin/worktree-delete-guard.py
+# Keep both processes as children. The old `exec` left the delete guard alive
+# when OpenCode was OOM-killed, so Docker kept reporting a broken container as
+# running and never applied restart: unless-stopped.
+python3 /usr/local/bin/worktree-delete-guard.py &
+guard_pid=$!
+
+stop_children() {
+  kill "$upstream_pid" "$guard_pid" 2>/dev/null || true
+  wait "$upstream_pid" "$guard_pid" 2>/dev/null || true
+}
+trap 'stop_children; exit 0' INT TERM HUP
+
+if wait -n "$upstream_pid" "$guard_pid"; then
+  exit_status=0
+else
+  exit_status=$?
+fi
+if ! kill -0 "$upstream_pid" 2>/dev/null; then
+  exited_pid="opencode"
+elif ! kill -0 "$guard_pid" 2>/dev/null; then
+  exited_pid="delete-guard"
+else
+  exited_pid="unknown"
+fi
+
+echo "opencode-serve-guarded: ${exited_pid} exited (status=${exit_status}); stopping service so Docker restarts it" >&2
+stop_children
+# Any unexpected child exit is a service failure, including status 0.
+exit 1

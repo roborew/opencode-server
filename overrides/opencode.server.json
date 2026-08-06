@@ -7,11 +7,6 @@
     }
   },
   "mcp": {
-    "docs-mcp-server": {
-      "type": "remote",
-      "enabled": true,
-      "url": "http://host.docker.internal:6280/sse"
-    },
     "augment-context-engine": {
       "enabled": false
     },

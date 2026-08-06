@@ -9,6 +9,18 @@ services:
         OPENCODE_GID: ${OPENCODE_GID:-1000}
     container_name: opencode-server
     restart: unless-stopped
+    # Keep a runaway upstream from exhausting the host. `memswap_limit` equals
+    # `mem_limit` to disable container swap; both are configurable at runtime.
+    mem_limit: ${OPENCODE_MEMORY_LIMIT:-8g}
+    memswap_limit: ${OPENCODE_MEMORY_SWAP_LIMIT:-8g}
+    healthcheck:
+      # The guard returns 401 only after it has reached the upstream; 200 is
+      # also accepted for deployments that inject auth into local probes.
+      test: ["CMD-SHELL", "status=$$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:4097/global/health || true); test \"$$status\" = 401 -o \"$$status\" = 200"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
     # Entrypoint starts as root, chowns volumes, then drops to OPENCODE_UID:GID
     # (host user). setup/preflight auto-fills these from `id -u`/`id -g` (or
     # OPENCODE_USERNAME). Do not set compose `user:` — that blocks the drop.
@@ -32,7 +44,6 @@ services:
       GH_TOKEN: ${GH_TOKEN:-}
       CODERABBIT_API_KEY: ${CODERABBIT_API_KEY:-}
       MCPJUNGLE_OPENCODE_TOKEN: ${MCPJUNGLE_OPENCODE_TOKEN:-}
-      DOCS_MCP_URL: ${DOCS_MCP_URL:-http://host.docker.internal:6280/sse}
       DOCKER_HOST_INTERNAL: ${DOCKER_HOST_INTERNAL:-host.docker.internal}
       LOCALHOST_REWRITE: ${LOCALHOST_REWRITE:-1}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}

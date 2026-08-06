@@ -74,10 +74,10 @@ Checks print `[ok]`, `[warn]`, or `[fail]` with fix hints. Failures block projec
 | GitHub | `gh auth status`; fine-grained via capability checks, or classic scopes; `GH_ORG` + repo list access |
 | CodeRabbit | `coderabbit auth status` when `CODERABBIT_API_KEY` is set |
 | Providers | `OPENROUTER_API_KEY` or connected providers |
-| MCPs | `GET /mcp` for each enabled server (`mcpjungle`, `claude-context`, `docs-mcp-server`) |
+| MCPs | `GET /mcp` for each enabled server (`mcpjungle`, `claude-context`) |
 
 ## Managed MCP upstreams
 
 `mcpjungle` is the sole gateway for managed upstreams, including Cloudflare API and Cloudflare Docs. OpenCode only carries the MCPJungle bearer token; upstream credentials and any OAuth grants are registered, stored, and refreshed in MCPJungle.
 
-Keep `docs-mcp-server` and `claude-context` as the two local exceptions. Do not run `opencode mcp auth` in this container for a managed upstream. If its status is `needs_auth`, repair the upstream registration or authorization in MCPJungle, then reconnect or restart the OpenCode service.
+`claude-context` is the local Milvus-backed indexing MCP. Do not run `opencode mcp auth` in this container for a managed upstream. If its status is `needs_auth`, repair the upstream registration or authorization in MCPJungle, then reconnect or restart the OpenCode service.
