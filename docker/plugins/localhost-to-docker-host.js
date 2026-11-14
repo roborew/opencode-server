@@ -1,6 +1,11 @@
 /**
  * Rewrites loopback URLs (localhost / 127.0.0.1 / [::1]) to the Docker host
- * gateway before tools like webfetch or bash curl run inside the container.
+ * gateway before tools like webfetch or bash/shell curl run inside the container.
+ *
+ * OpenCode v2 plugin API: default-export a definition with id + setup(ctx);
+ * hooks are registered on the domain that owns the operation
+ * (ctx.tool.hook("execute.before", ...)) and the callback receives one
+ * mutable event with .tool (tool name) and .input (the tool args object).
  *
  * Env:
  *   DOCKER_HOST_INTERNAL — target host (default: host.docker.internal)
@@ -54,6 +59,10 @@ function rewriteArgs(args, host, toolName) {
     return;
   }
 
+  // v2 renamed the bash tool to shell; accept both.
+  const isShell =
+    toolName === "bash" || toolName === "shell" || toolName === "terminal";
+
   for (const [key, value] of Object.entries(args)) {
     if (typeof value !== "string") {
       continue;
@@ -64,7 +73,7 @@ function rewriteArgs(args, host, toolName) {
       continue;
     }
 
-    if (toolName === "bash" && key === "command") {
+    if (isShell && key === "command") {
       args[key] = rewriteUrlsInText(value, host);
       continue;
     }
@@ -75,19 +84,32 @@ function rewriteArgs(args, host, toolName) {
   }
 }
 
-export const LocalhostToDockerHost = async () => {
-  if (!isRewriteEnabled()) {
-    return {};
-  }
+async function definePlugin(definition) {
+  // Prefer Plugin.define from @opencode/plugin when resolvable; the plain
+  // {id, setup} object satisfies the v2 plugin loader either way.
+  try {
+    const mod = await import("@opencode/plugin");
+    if (mod && mod.Plugin && typeof mod.Plugin.define === "function") {
+      return mod.Plugin.define(definition);
+    }
+  } catch { }
+  return definition;
+}
 
-  const host = targetHost();
+export default await definePlugin({
+  id: "localhost-to-docker-host",
+  async setup(ctx) {
+    if (!isRewriteEnabled()) {
+      return;
+    }
+    const host = targetHost();
 
-  return {
-    "tool.execute.before": async (input, output) => {
-      if (!output?.args) {
+    await ctx.tool.hook("execute.before", (event) => {
+      const args = event?.input;
+      if (!args || typeof args !== "object") {
         return;
       }
-      rewriteArgs(output.args, host, input.tool);
-    },
-  };
-};
+      rewriteArgs(args, host, event.tool);
+    });
+  },
+});

@@ -30,9 +30,9 @@ http://opencode.local:4097
 ```
 
 ```bash
-opencode attach http://opencode.local:4097
-# Username: opencode (or OPENCODE_SERVER_USERNAME)
-# Password: OPENCODE_SERVER_PASSWORD
+opencode --server http://opencode.local:4097
+# Username: opencode (v2 hardcodes it; OPENCODE_SERVER_USERNAME is unsupported)
+# Password: OPENCODE_SERVER_PASSWORD (or OPENCODE_PASSWORD), or pair via /api/pair
 ```
 
 ### Verify from the connector (must be 200 with auth)
@@ -41,24 +41,24 @@ opencode attach http://opencode.local:4097
 docker compose up -d --build opencode twingate-connector
 
 docker run --rm --network container:twingate-connector curlimages/curl:8.7.1 \
-  -sf -u "opencode:YOUR_PASSWORD" http://opencode.local:4097/global/health
+  -sf -u "opencode:YOUR_PASSWORD" http://opencode.local:4097/api/info
 ```
 
 Also resolvable: `opencode-server` and compose service name `opencode` (same IP). Prefer the FQDN alias for Twingate.
 
 ## Ports
 
-| Port | Role |
-| ---- | ---- |
+| Port     | Role                                                                     |
+| -------- | ------------------------------------------------------------------------ |
 | **4097** | OpenCode (host publish + container listen) — chosen to avoid Kilo/`4096` |
-| 4096 | Leave free for Kilo / other tools |
+| 4096     | Leave free for Kilo / other tools                                        |
 
 Set `OPENCODE_PUBLISH_PORT=4097` in `.env` (default in compose).
 
 ## Localhost on the Docker host
 
 ```bash
-curl -sf -u "opencode:YOUR_PASSWORD" http://127.0.0.1:4097/global/health
+curl -sf -u "opencode:YOUR_PASSWORD" http://127.0.0.1:4097/api/info
 ```
 
 `localhost` reaches the same Docker server. Prefer `http://opencode.local:4097` (or your `OPENCODE_FQDN`) when you want the same hostname as Twingate clients.
@@ -103,10 +103,10 @@ Inside the container, `localhost` / `127.0.0.1` is the **container**, not your M
 
 An OpenCode plugin installed at container startup rewrites loopback URLs to `host.docker.internal` (or `DOCKER_HOST_INTERNAL`) before tools execute. External and LAN URLs are unchanged.
 
-| Setting | Default | Purpose |
-| ------- | ------- | ------- |
+| Setting                | Default                | Purpose                                 |
+| ---------------------- | ---------------------- | --------------------------------------- |
 | `DOCKER_HOST_INTERNAL` | `host.docker.internal` | Target host for rewritten loopback URLs |
-| `LOCALHOST_REWRITE` | `1` | Set to `0` to disable rewriting |
+| `LOCALHOST_REWRITE`    | `1`                    | Set to `0` to disable rewriting         |
 
 Compose declares `extra_hosts: host.docker.internal:host-gateway` so Linux and DigitalOcean match Docker Desktop.
 

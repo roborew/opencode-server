@@ -72,7 +72,7 @@ fi
 hr "Server health (localhost)"
 load_env || true
 if [[ -n "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
-  curl -sf -u "$(opencode_auth)" "$(opencode_base_url)/global/health" && echo \
+  curl -sf -u "$(opencode_auth)" "$(opencode_base_url)/api/info" && echo \
     || echo "health check failed"
 else
   echo "OPENCODE_SERVER_PASSWORD unset — skip"

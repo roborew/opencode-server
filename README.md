@@ -6,11 +6,11 @@ Self-contained Docker Compose stack for a headless OpenCode server, Twingate rem
 
 ## What's in the stack
 
-| Service | Role |
-| ------- | ---- |
-| `opencode-server` | `opencode serve` on `0.0.0.0:4097` |
-| `twingate-connector` | Proxies remote clients to `OPENCODE_FQDN:4097` (default `opencode.local`) |
-| `milvus-standalone` + etcd + minio | Vector store for `claude-context` MCP (`COMPOSE_PROFILES=milvus`) |
+| Service                            | Role                                                                      |
+| ---------------------------------- | ------------------------------------------------------------------------- |
+| `opencode-server`                  | `opencode serve` on `0.0.0.0:4097`                                        |
+| `twingate-connector`               | Proxies remote clients to `OPENCODE_FQDN:4097` (default `opencode.local`) |
+| `milvus-standalone` + etcd + minio | Vector store for `claude-context` MCP (`COMPOSE_PROFILES=milvus`)         |
 
 ## Install / quick start
 
@@ -60,24 +60,24 @@ Then:
 
 ```bash
 curl -sf http://localhost:9091/healthz   # when MILVUS_HEALTH_PUBLISH_PORT is set
-curl -sf -u "opencode:YOUR_PASSWORD" http://localhost:4097/global/health
+curl -sf -u "opencode:YOUR_PASSWORD" http://localhost:4097/api/info
 ```
 
-Connect remotely (with Twingate): `http://opencode.local:4097` or `opencode attach http://opencode.local:4097`.
+Connect remotely (with Twingate): `http://opencode.local:4097`, or from a v2 CLI: `opencode --server http://opencode.local:4097` (password via `OPENCODE_PASSWORD`; the username is always `opencode`).
 
 **Important:** Do not enable host `claude-context` while this Docker server is indexing — see [docs/integrations.md](docs/integrations.md#claude-context-indexing).
 
 ## Docs
 
-| Topic | Doc |
-| ----- | --- |
-| Setup script, projects, workspaces | [docs/setup.md](docs/setup.md) |
-| Environment variables & Infisical | [docs/environment.md](docs/environment.md) |
-| Twingate, ports, hosts, localhost rewrite | [docs/access.md](docs/access.md) |
-| Claude Context, GitHub, CodeRabbit, managed MCP upstreams | [docs/integrations.md](docs/integrations.md) |
-| Sysbox sibling sandboxes (Ubuntu) | [docs/sandbox.md](docs/sandbox.md) |
-| Troubleshooting | [docs/troubleshooting.md](docs/troubleshooting.md) |
-| Docs index | [docs/README.md](docs/README.md) |
+| Topic                                                     | Doc                                                |
+| --------------------------------------------------------- | -------------------------------------------------- |
+| Setup script, projects, workspaces                        | [docs/setup.md](docs/setup.md)                     |
+| Environment variables & Infisical                         | [docs/environment.md](docs/environment.md)         |
+| Twingate, ports, hosts, localhost rewrite                 | [docs/access.md](docs/access.md)                   |
+| Claude Context, GitHub, CodeRabbit, managed MCP upstreams | [docs/integrations.md](docs/integrations.md)       |
+| Sysbox sibling sandboxes (Ubuntu)                         | [docs/sandbox.md](docs/sandbox.md)                 |
+| Troubleshooting                                           | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Docs index                                                | [docs/README.md](docs/README.md)                   |
 
 ## Layout
 

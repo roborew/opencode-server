@@ -6,17 +6,24 @@
       "/var/opencode-xdg/opencode/worktree/**": "allow"
     }
   },
+  "experimental": {
+    "todo": true
+  },
   "mcp": {
     "augment-context-engine": {
-      "enabled": false
+      "enabled": false,
+      "disabled": true
     },
     "auggie": {
-      "enabled": false
+      "enabled": false,
+      "disabled": true
     },
     "claude-context": {
       "type": "local",
       "enabled": true,
-      "command": ["claude-context-mcp"],
+      "command": [
+        "claude-context-mcp"
+      ],
       "timeout": 120000,
       "environment": {
         "OPENAI_API_KEY": "{env:OPENAI_API_KEY}",

@@ -227,9 +227,6 @@ if [[ -n "${OPENCODE_WORKTREES_DIR:-}${OPENCODE_APPS_DIR:-}" && -f /usr/local/bi
   setsid python3 /usr/local/bin/rewrite-worktree-gitdirs.py >/dev/null 2>&1 &
 fi
 
-# Workspace create/delete needs this flag (otherwise startSync is a no-op and
-# create times out waiting for workspace.status).
-export OPENCODE_EXPERIMENTAL_WORKSPACES="${OPENCODE_EXPERIMENTAL_WORKSPACES:-true}"
 export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"
 
 run_cmd() {

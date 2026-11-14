@@ -9,7 +9,7 @@
 ```bash
 # Is the stack up?
 docker ps --format 'table {{.Names}}\t{{.Status}}' | grep -E 'opencode|milvus|twingate'
-docker exec opencode-server curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4097/global/health  # 401 = healthy, needs auth
+docker exec opencode-server curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4097/api/info  # 401 = healthy, needs auth
 docker inspect opencode-server --format 'status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{end}} oom={{.State.OOMKilled}}'
 
 # Restart cleanly (Infisical-injected):
@@ -29,7 +29,7 @@ docker inspect opencode-server --format 'status={{.State.Status}} health={{if .S
 ./scripts/wipe-opencode-data.sh --yes
 ```
 
-If `global/health` returns anything other than `401` (or `200` with auth) from inside the container, the OpenCode upstream is dead — fix before touching anything else (see §6).
+If `/api/info` returns anything other than `401` (or `200` with auth) from inside the container, the OpenCode upstream is dead — fix before touching anything else (see §6).
 
 ---
 
@@ -37,11 +37,11 @@ If `global/health` returns anything other than `401` (or `200` with auth) from i
 
 A Docker Compose stack that runs a single headless `opencode serve` instance behind a worktree delete-guard proxy, with optional Twingate remote access and an optional Milvus/etcd/minio vector store for `claude-context` semantic indexing.
 
-| Service | Image | Role |
-| --- | --- | --- |
-| `opencode-server` | built from `./Dockerfile` | `opencode serve` (real port 4098) fronted by Python delete-guard proxy (exposed 4097) |
-| `twingate-connector` | `twingate/connector:1` | Remote-access connector (resource = `OPENCODE_FQDN:4097`) |
-| `milvus-standalone` + `etcd` + `minio` | official images, profile `milvus` | Vector store for `claude-context` MCP server |
+| Service                                | Image                             | Role                                                                                  |
+| -------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------- |
+| `opencode-server`                      | built from `./Dockerfile`         | `opencode serve` (real port 4098) fronted by Python delete-guard proxy (exposed 4097) |
+| `twingate-connector`                   | `twingate/connector:1`            | Remote-access connector (resource = `OPENCODE_FQDN:4097`)                             |
+| `milvus-standalone` + `etcd` + `minio` | official images, profile `milvus` | Vector store for `claude-context` MCP server                                          |
 
 **Container internals** (PID 1 inside `opencode-server` is `infisical`, which execs into `opencode-serve-guarded.sh`, which `setsid`s `opencode serve --port 4098` then `exec`s into `python3 worktree-delete-guard.py` listening on 4097). See `docker/entrypoint.sh:235-285` and `docker/opencode-serve-guarded.sh`.
 
@@ -82,19 +82,20 @@ A Docker Compose stack that runs a single headless `opencode serve` instance beh
 
 ## 3. The lifecycle: what to run when
 
-| Scenario | Command |
-| --- | --- |
-| First install / fresh checkout | `./scripts/compose.sh up -d --build` then `./scripts/setup.sh` |
-| Stack running but I want a clean OpenCode process | `./scripts/compose.sh up -d --force-recreate opencode` |
-| Config repo (`CONFIG_REF`) changed — picked up at build time | `./scripts/compose.sh build --no-cache opencode && ./scripts/compose.sh up -d opencode` |
-| `overrides/opencode.server.json` edited | Rebuild (next row above) — overlay is copied into the image |
-| Want to add/remove registered projects | `./scripts/setup.sh projects local` (interactive amend) |
-| Want to clone new repos from GitHub | `./scripts/setup.sh projects github` (needs `GH_TOKEN` + `GH_ORG`) |
-| Health suspicious / something feels off | `./scripts/setup.sh preflight` |
-| Server DB/auth is poisoned / migrating path scheme | `./scripts/wipe-opencode-data.sh --yes` (then `./scripts/setup.sh`) |
-| Desktop host freezes / high RAM | `./scripts/doctor-perf.sh` while glitching |
-| `opencode` was OOM-killed | Inspect `journalctl -k --no-pager | grep -i 'Killed process.*opencode'`; the default 8 GiB `OPENCODE_MEMORY_LIMIT` contains the impact and Docker restarts the service |
-| Just want the stack (no Milvus) | `./scripts/compose.sh up -d --build` with `COMPOSE_PROFILES=` empty in `.env` |
+| Scenario                                                     | Command                                                                                                                                           |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First install / fresh checkout                               | `./scripts/compose.sh up -d --build` then `./scripts/setup.sh`                                                                                    |
+| Stack running but I want a clean OpenCode process            | `./scripts/compose.sh up -d --force-recreate opencode`                                                                                            |
+| Config repo (`CONFIG_REF`) changed — picked up at build time | `./scripts/compose.sh build --no-cache opencode && ./scripts/compose.sh up -d opencode`                                                           |
+| `overrides/opencode.server.json` edited                      | Rebuild (next row above) — overlay is copied into the image                                                                                       |
+| Want a newer OpenCode v2                                     | Bump `OPENCODE_VERSION` (default `2.3.0`) in `.env`, then `./scripts/compose.sh build --no-cache opencode && ./scripts/compose.sh up -d opencode` |
+| Want to add/remove registered projects                       | `./scripts/setup.sh projects local` (interactive amend)                                                                                           |
+| Want to clone new repos from GitHub                          | `./scripts/setup.sh projects github` (needs `GH_TOKEN` + `GH_ORG`)                                                                                |
+| Health suspicious / something feels off                      | `./scripts/setup.sh preflight`                                                                                                                    |
+| Server DB/auth is poisoned / migrating path scheme           | `./scripts/wipe-opencode-data.sh --yes` (then `./scripts/setup.sh`)                                                                               |
+| Desktop host freezes / high RAM                              | `./scripts/doctor-perf.sh` while glitching                                                                                                        |
+| `opencode` was OOM-killed                                    | Inspect `journalctl -k --no-pager                                                                                                                 | grep -i 'Killed process.*opencode'`; the default 8 GiB `OPENCODE_MEMORY_LIMIT` contains the impact and Docker restarts the service |
+| Just want the stack (no Milvus)                              | `./scripts/compose.sh up -d --build` with `COMPOSE_PROFILES=` empty in `.env`                                                                     |
 
 ---
 
@@ -102,10 +103,10 @@ A Docker Compose stack that runs a single headless `opencode serve` instance beh
 
 Two injection points, both **runtime only** (never build-time). Preflight verifies them on PID 1 of the running container.
 
-| Source | How they reach the container |
-| --- | --- |
-| Host `.env` | Compose `env_file` / `environment:` at `docker compose up` |
-| Infisical | `./scripts/compose.sh` (host-side) and `docker/entrypoint.sh:281-285` (in-container, via `infisical run` wrapping `opencode-serve-guarded.sh`) |
+| Source      | How they reach the container                                                                                                                   |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host `.env` | Compose `env_file` / `environment:` at `docker compose up`                                                                                     |
+| Infisical   | `./scripts/compose.sh` (host-side) and `docker/entrypoint.sh:281-285` (in-container, via `infisical run` wrapping `opencode-serve-guarded.sh`) |
 
 **`.env` holds**: Infisical bootstrap (`INFISICAL_PROJECT_ID`, `INFISICAL_DOMAIN`, `INFISICAL_CLIENT_ID`+`SECRET` or `INFISICAL_TOKEN`), host-local `OPENCODE_UID`/`OPENCODE_GID`, optional non-secret config (ports, `OPENCODE_FQDN`).
 
@@ -227,7 +228,7 @@ From `scripts/lib/preflight.sh` — the source of truth:
 - `OPENCODE_UID`/`OPENCODE_GID` resolved
 - Infisical bootstrap **or** `OPENCODE_SERVER_PASSWORD` configured
 - Sandbox mode consistency (Sysbox runtime present iff enabled)
-- `opencode-server` container running, `/global/health` reachable
+- `opencode-server` container running, `/api/info` reachable
 - `OPENCODE_FQDN` resolves to loopback on the host
 - `OPENCODE_APPS_DIR` mounted with the right ownership
 - `OPENCODE_WORKTREES_DIR` mounted
@@ -246,17 +247,17 @@ Failures block `./scripts/setup.sh projects ...` unless `--force`.
 
 ## 10. Common pitfalls
 
-| Pitfall | Why it bites | Fix |
-| --- | --- | --- |
-| Edited `overrides/opencode.server.json` but server still serves the old config | Overlay is baked into the image | `./scripts/compose.sh build --no-cache opencode && ./scripts/compose.sh up -d opencode` |
-| Pushed new skill to `CONFIG_REF` branch, not visible in container | Config is cloned at build, not at run | Same as above |
-| `claude-context` not finding anything | Probably running host version while Desktop is on this server | Quit Desktop; `pkill -f claude-context-mcp`; set `mcp.claude-context.enabled: false` in host `~/.config/opencode/opencode.json` |
-| Workspace create/delete times out | `OPENCODE_EXPERIMENTAL_WORKSPACES` not true (compose default) | Set in `.env` (or Infisical), then `./scripts/compose.sh up -d --force-recreate opencode` |
-| 404 on a `localhost:NNNN` link from the agent | Container `localhost` ≠ host `localhost` | `LOCALHOST_REWRITE=1` (default) rewrites to `host.docker.internal`; ensure the target service binds `*******` on the host |
-| Host can't resolve `OPENCODE_FQDN` | No `/etc/hosts` entry | `./scripts/setup.sh bootstrap --yes` |
-| Twingate can't reach the server | `TWINGATE_DNS` set to public DNS (e.g. `1.1.1.1`) — bypasses Docker embedded DNS | Remove `TWINGATE_DNS` from connector env |
-| `down -v` "accidentally" | Wipes sessions/auth permanently | Recoverable only from backups; restore volume or re-seed |
-| `infisical login` from a terminal leaks into compose | Auth scope mismatch | `compose.sh` exports `INFISICAL_TOKEN` from `.env` and unsets inherited `INFISICAL_TOKEN` — trust the wrapper |
+| Pitfall                                                                        | Why it bites                                                                                                       | Fix                                                                                                                             |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| Edited `overrides/opencode.server.json` but server still serves the old config | Overlay is baked into the image                                                                                    | `./scripts/compose.sh build --no-cache opencode && ./scripts/compose.sh up -d opencode`                                         |
+| Pushed new skill to `CONFIG_REF` branch, not visible in container              | Config is cloned at build, not at run                                                                              | Same as above                                                                                                                   |
+| `claude-context` not finding anything                                          | Probably running host version while Desktop is on this server                                                      | Quit Desktop; `pkill -f claude-context-mcp`; set `mcp.claude-context.enabled: false` in host `~/.config/opencode/opencode.json` |
+| Every client 401s                                                              | v2 hardcodes the basic-auth username to `opencode` — remove any `OPENCODE_SERVER_USERNAME` from `.env` / Infisical | Re-attach clients with password only; username is not configurable                                                              |
+| 404 on a `localhost:NNNN` link from the agent                                  | Container `localhost` ≠ host `localhost`                                                                           | `LOCALHOST_REWRITE=1` (default) rewrites to `host.docker.internal`; ensure the target service binds `*******` on the host       |
+| Host can't resolve `OPENCODE_FQDN`                                             | No `/etc/hosts` entry                                                                                              | `./scripts/setup.sh bootstrap --yes`                                                                                            |
+| Twingate can't reach the server                                                | `TWINGATE_DNS` set to public DNS (e.g. `1.1.1.1`) — bypasses Docker embedded DNS                                   | Remove `TWINGATE_DNS` from connector env                                                                                        |
+| `down -v` "accidentally"                                                       | Wipes sessions/auth permanently                                                                                    | Recoverable only from backups; restore volume or re-seed                                                                        |
+| `infisical login` from a terminal leaks into compose                           | Auth scope mismatch                                                                                                | `compose.sh` exports `INFISICAL_TOKEN` from `.env` and unsets inherited `INFISICAL_TOKEN` — trust the wrapper                   |
 
 ---
 

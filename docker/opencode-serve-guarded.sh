@@ -9,7 +9,6 @@ source /usr/local/bin/configure-git-identity.sh
 configure_git_identity
 
 CONTAINER_WT="${OPENCODE_CONTAINER_WORKTREE:-/var/opencode-xdg/opencode/worktree}"
-export OPENCODE_EXPERIMENTAL_WORKSPACES="${OPENCODE_EXPERIMENTAL_WORKSPACES:-true}"
 export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"
 
 if [[ "${OPENCODE_DELETE_GUARD:-1}" == "0" || "${OPENCODE_DELETE_GUARD:-1}" == "false" ]]; then
@@ -42,7 +41,7 @@ export OPENCODE_UPSTREAM_PORT=4098
 export OPENCODE_GUARD_HOST=0.0.0.0
 export OPENCODE_GUARD_PORT=4097
 
-echo "opencode-serve-guarded: delete-guard 0.0.0.0:4097 → 127.0.0.1:4098 (EXPERIMENTAL_WORKSPACES=${OPENCODE_EXPERIMENTAL_WORKSPACES})" >&2
+echo "opencode-serve-guarded: delete-guard 0.0.0.0:4097 → 127.0.0.1:4098" >&2
 setsid "${upstream[@]}" &
 upstream_pid=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
