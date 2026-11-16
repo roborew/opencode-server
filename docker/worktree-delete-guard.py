@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Streaming reverse proxy that:
 1) Blocks DELETE of main app checkouts under OPENCODE_APPS_DIR.
-2) After workspace/worktree DELETE, finishes git cleanup (host-path rewrite
+2) After worktree DELETE, finishes git cleanup (host-path rewrite
    makes OpenCode's own `git worktree remove` leave prunable admin entries).
+
+OpenCode v2 API: DELETE /api/worktree with JSON body
+{"projectID": str, "directory": str, "force": bool}. There are no workspace
+endpoints in v2 — projects replaced them.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,8 +18,6 @@ import socket
 import subprocess
 import sys
 import threading
-import urllib.error
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -49,46 +52,30 @@ def _is_protected_project_root(path: str) -> bool:
     return path == HOST_APPS or path.startswith(HOST_APPS + "/")
 
 
-def _blocked_worktree_delete(body: bytes) -> str | None:
-    try:
-        data = json.loads(body.decode("utf-8") or "{}")
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    directory = (data.get("directory") or "").rstrip("/")
-    if directory and _is_protected_project_root(directory):
-        return directory
-    return None
+def _parse_worktree_delete_body(raw: bytes) -> tuple[str, str]:
+    """Return (directory, projectID) from a v2 DELETE /api/worktree body.
 
-
-def _parse_json_directory(raw: bytes) -> str:
+    Non-object bodies and non-string directories yield empty values so the
+    protected-root check is skipped and the request still reaches the upstream
+    for validation.
+    """
     try:
         data = json.loads(raw.decode("utf-8") or "{}")
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return ""
-    if isinstance(data, dict):
-        return (data.get("directory") or "").rstrip("/")
-    return ""
+        return "", ""
+    if not isinstance(data, dict):
+        return "", ""
+    raw_dir = data.get("directory")
+    directory = raw_dir.rstrip("/") if isinstance(raw_dir, str) else ""
+    project = str(data.get("projectID") or "")
+    return directory, project
 
 
-def _lookup_workspace_directory(workspace_id: str, auth_header: str, xdir: str) -> str:
-    """GET /experimental/workspace and find directory for id."""
-    url = f"http://{UPSTREAM_HOST}:{UPSTREAM_PORT}/experimental/workspace"
-    req = urllib.request.Request(url, method="GET")
-    if auth_header:
-        req.add_header("Authorization", auth_header)
-    if xdir:
-        req.add_header("X-Opencode-Directory", xdir)
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8") or "[]")
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
-        return ""
-    if not isinstance(data, list):
-        return ""
-    for item in data:
-        if isinstance(item, dict) and item.get("id") == workspace_id:
-            return (item.get("directory") or "").rstrip("/")
-    return ""
+def _blocked_worktree_delete(body: bytes) -> str | None:
+    directory, _ = _parse_worktree_delete_body(body)
+    if directory and _is_protected_project_root(directory):
+        return directory
+    return None
 
 
 def _schedule_git_cleanup(directory: str, project: str = "") -> None:
@@ -147,7 +134,7 @@ class GuardHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length > 0 else b""
         path = parsed.path.rstrip("/")
 
-        if path == "/experimental/worktree":
+        if path == "/api/worktree":
             blocked = _blocked_worktree_delete(body)
             if blocked:
                 msg = (
@@ -164,23 +151,15 @@ class GuardHandler(BaseHTTPRequestHandler):
                 self.send_header("Connection", "close")
                 self.end_headers()
                 self.wfile.write(payload)
-                sys.stderr.write(
-                    f"worktree-delete-guard: blocked DELETE {blocked}\n"
-                )
+                sys.stderr.write(f"worktree-delete-guard: blocked DELETE {blocked}\n")
                 return
 
         # Resolve cleanup target before streaming DELETE (must not block response).
+        # v2 DELETE /api/worktree body: {"projectID", "directory", "force"}.
         cleanup_dir = ""
-        project = self.headers.get("X-Opencode-Directory") or ""
-        if path == "/experimental/worktree":
-            cleanup_dir = _parse_json_directory(body)
-        elif path.startswith("/experimental/workspace/"):
-            wid = path.rsplit("/", 1)[-1]
-            cleanup_dir = _lookup_workspace_directory(
-                wid,
-                self.headers.get("Authorization") or "",
-                project,
-            )
+        project = ""
+        if path == "/api/worktree":
+            cleanup_dir, project = _parse_worktree_delete_body(body)
 
         if cleanup_dir:
             _schedule_git_cleanup(cleanup_dir, project)
@@ -232,7 +211,9 @@ class GuardHandler(BaseHTTPRequestHandler):
                 if key.lower() == "host":
                     value = f"{UPSTREAM_HOST}:{UPSTREAM_PORT}"
                 lines.append(f"{key}: {value}".encode())
-            if body and "content-length" not in {k.lower() for k in self.headers.keys()}:
+            if body and "content-length" not in {
+                k.lower() for k in self.headers.keys()
+            }:
                 lines.append(f"Content-Length: {len(body)}".encode())
             lines.append(b"")
             upstream.sendall(b"\r\n".join(lines) + b"\r\n")

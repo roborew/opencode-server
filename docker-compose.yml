@@ -3,8 +3,9 @@ services:
     build:
       context: .
       args:
-        CONFIG_REPO: ${CONFIG_REPO:-https://github.com/roborew/opencode-config.git}
+        CONFIG_REPO: ${CONFIG_REPO:-https://github.com/roborew/opencode-config-v2.git}
         CONFIG_REF: ${CONFIG_REF:-main}
+        OPENCODE_VERSION: ${OPENCODE_VERSION:-2.3.0}
         OPENCODE_UID: ${OPENCODE_UID:-1000}
         OPENCODE_GID: ${OPENCODE_GID:-1000}
     container_name: opencode-server
@@ -16,7 +17,7 @@ services:
     healthcheck:
       # The guard returns 401 only after it has reached the upstream; 200 is
       # also accepted for deployments that inject auth into local probes.
-      test: ["CMD-SHELL", "status=$$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:4097/global/health || true); test \"$$status\" = 401 -o \"$$status\" = 200"]
+      test: ["CMD-SHELL", "status=$$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:4097/api/info || true); test \"$$status\" = 401 -o \"$$status\" = 200"]
       interval: 30s
       timeout: 10s
       start_period: 30s
@@ -32,18 +33,25 @@ services:
       OPENCODE_CONFIG_DIR: /home/opencode/.config/opencode
       OPENCODE_OVERRIDE: /home/opencode/overrides/opencode.server.json
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD}
-      OPENCODE_SERVER_USERNAME: ${OPENCODE_SERVER_USERNAME:-opencode}
+      # v2 hardcodes the basic-auth username to "opencode" — there is no
+      # OPENCODE_SERVER_USERNAME; a custom username makes every client 401.
       MILVUS_ADDRESS: http://milvus-standalone:19530
       MILVUS_TOKEN: ${MILVUS_TOKEN:-local}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-OpenAI}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
       GH_ORG: ${GH_ORG:-}
       GH_PROJECT: ${GH_PROJECT:-}
       GH_TOKEN: ${GH_TOKEN:-}
-      CODERABBIT_API_KEY: ${CODERABBIT_API_KEY:-}
-      MCPJUNGLE_OPENCODE_TOKEN: ${MCPJUNGLE_OPENCODE_TOKEN:-}
+      # Bearer for the MCPJungle gateway (global config mcp.servers.mcpjungle).
+      # MCPJUNGLE_TOKEN is canonical; MCPJUNGLE_OPENCODE_TOKEN kept as fallback.
+      MCPJUNGLE_TOKEN: ${MCPJUNGLE_TOKEN:-${MCPJUNGLE_OPENCODE_TOKEN:-}}
+      # oc-sandbox plugin (opencode-config-v2): backend + sidecar wiring.
+      # URL/TOKEN stay empty until the §10 sidecar lands (ticket 09); with the
+      # sandbox overlay the plugin uses the docker backend through the socket.
+      OC_SANDBOX_BACKEND: ${OC_SANDBOX_BACKEND:-}
+      OC_SANDBOX_URL: ${OC_SANDBOX_URL:-}
+      OC_SANDBOX_TOKEN: ${OC_SANDBOX_TOKEN:-}
       DOCKER_HOST_INTERNAL: ${DOCKER_HOST_INTERNAL:-host.docker.internal}
       LOCALHOST_REWRITE: ${LOCALHOST_REWRITE:-1}
       INFISICAL_PROJECT_ID: ${INFISICAL_PROJECT_ID:-}
@@ -63,9 +71,6 @@ services:
       GIT_AUTHOR_EMAIL: ${GIT_AUTHOR_EMAIL:-}
       GIT_COMMITTER_NAME: ${GIT_COMMITTER_NAME:-}
       GIT_COMMITTER_EMAIL: ${GIT_COMMITTER_EMAIL:-}
-      # Required for Desktop workspace create/delete (otherwise API times out
-      # waiting for workspace.status after 5s — see anomalyco/opencode#23746).
-      OPENCODE_EXPERIMENTAL_WORKSPACES: ${OPENCODE_EXPERIMENTAL_WORKSPACES:-true}
       # Persistent OpenCode runtime state (volume via /var/opencode-xdg).
       XDG_DATA_HOME: /var/opencode-xdg
       OPENCODE_CONTAINER_XDG: /var/opencode-xdg
@@ -119,9 +124,9 @@ services:
       TWINGATE_LABEL_HOSTNAME: opencode-connector
       TWINGATE_LOG_ANALYTICS: v2
       TWINGATE_LOG_LEVEL: "3"
-      # Do NOT set TWINGATE_DNS to 1.1.1.1/8.8.8.8 — that bypasses Docker
-      # embedded DNS and breaks resolving OPENCODE_FQDN / service names.
-      # Prefer ./scripts/compose.sh so TWINGATE_* come from Infisical at start.
+    # Do NOT set TWINGATE_DNS to 1.1.1.1/8.8.8.8 — that bypasses Docker
+    # embedded DNS and breaks resolving OPENCODE_FQDN / service names.
+    # Prefer ./scripts/compose.sh so TWINGATE_* come from Infisical at start.
     sysctls:
       net.ipv4.ping_group_range: "0 2147483647"
     networks:

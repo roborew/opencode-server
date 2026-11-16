@@ -2,7 +2,7 @@
 # Runtime secrets via Infisical (deployed) or compose .env (local).
 FROM ubuntu:24.04
 
-ARG CONFIG_REPO=https://github.com/roborew/opencode-config.git
+ARG CONFIG_REPO=https://github.com/roborew/opencode-config-v2.git
 ARG CONFIG_REF=main
 ARG INFISICAL_CLI_VERSION=0.43.84
 # mikefarah/yq v4 — PRD frontmatter, registry/label sync, legacy slices fanout
@@ -23,11 +23,11 @@ ENV INFISICAL_DISABLE_UPDATE_CHECK=true
 # image (Ubuntu 24.04 ships `ubuntu` at 1000:1000). Runtime drops to the host
 # uid/gid in the entrypoint after chowning volumes.
 RUN if ! getent group opencode >/dev/null ; then \
-      groupadd -o -g "${OPENCODE_GID}" opencode || groupadd opencode ; \
+    groupadd -o -g "${OPENCODE_GID}" opencode || groupadd opencode ; \
     fi ; \
     if ! getent passwd opencode >/dev/null ; then \
-      useradd -o -u "${OPENCODE_UID}" -g opencode -M -s /bin/bash opencode \
-        || useradd -g opencode -M -s /bin/bash opencode ; \
+    useradd -o -u "${OPENCODE_UID}" -g opencode -M -s /bin/bash opencode \
+    || useradd -g opencode -M -s /bin/bash opencode ; \
     fi ; \
     mkdir -p /home/opencode && chown opencode:opencode /home/opencode
 
@@ -51,26 +51,29 @@ RUN pip3 install --no-cache-dir --break-system-packages 'PyYAML>=6.0'
 # yq (mikefarah v4) — not the apt/snap Python wrapper
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
-      amd64) YQ_ARCH=amd64 ;; \
-      arm64) YQ_ARCH=arm64 ;; \
-      *) echo "unsupported dpkg arch for yq: $ARCH" >&2; exit 1 ;; \
+    amd64) YQ_ARCH=amd64 ;; \
+    arm64) YQ_ARCH=arm64 ;; \
+    *) echo "unsupported dpkg arch for yq: $ARCH" >&2; exit 1 ;; \
     esac \
     && curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${YQ_ARCH}" \
-      -o /usr/local/bin/yq \
+    -o /usr/local/bin/yq \
     && chmod +x /usr/local/bin/yq \
     && yq --version
 
-# Node.js 22 (claude-context MCP requires Node >=20, <24)
+# Node.js 24 (claude-context MCP supports Node >=20; upstream documents 20.x/22.x/24.x).
+# Its native deps are NAPI (faiss-node, tree-sitter grammars), so the prebuilt
+# binaries load unchanged on 24 — no source rebuild. 24 also satisfies the
+# config repo's `engines.node >= 24`.
 # Install from official nodejs.org binaries (includes npm) to avoid NodeSource 403s.
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
-      amd64) NODE_ARCH=x64 ;; \
-      arm64) NODE_ARCH=arm64 ;; \
-      *) echo "unsupported dpkg arch for Node.js: $ARCH" >&2; exit 1 ;; \
+    amd64) NODE_ARCH=x64 ;; \
+    arm64) NODE_ARCH=arm64 ;; \
+    *) echo "unsupported dpkg arch for Node.js: $ARCH" >&2; exit 1 ;; \
     esac \
-    && NODE_FILENAME="$(curl -fsSL https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt | grep "linux-${NODE_ARCH}.tar.xz" | awk "NR==1 {print \$2}")" \
+    && NODE_FILENAME="$(curl -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt | grep "linux-${NODE_ARCH}.tar.xz" | awk "NR==1 {print \$2}")" \
     && test -n "$NODE_FILENAME" \
-    && curl -fsSL "https://nodejs.org/dist/latest-v22.x/${NODE_FILENAME}" -o /tmp/node.tar.xz \
+    && curl -fsSL "https://nodejs.org/dist/latest-v24.x/${NODE_FILENAME}" -o /tmp/node.tar.xz \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
     && rm -f /tmp/node.tar.xz \
     && node --version \
@@ -89,12 +92,12 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 # Infisical CLI (deb on Ubuntu)
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
-      amd64) INFISICAL_ARCH=amd64 ;; \
-      arm64) INFISICAL_ARCH=arm64 ;; \
-      *) echo "unsupported dpkg arch for Infisical CLI: $ARCH" >&2; exit 1 ;; \
+    amd64) INFISICAL_ARCH=amd64 ;; \
+    arm64) INFISICAL_ARCH=arm64 ;; \
+    *) echo "unsupported dpkg arch for Infisical CLI: $ARCH" >&2; exit 1 ;; \
     esac \
     && curl -fsSL "https://github.com/Infisical/cli/releases/download/v${INFISICAL_CLI_VERSION}/infisical_${INFISICAL_CLI_VERSION}_linux_${INFISICAL_ARCH}.deb" \
-      -o /tmp/infisical.deb \
+    -o /tmp/infisical.deb \
     && apt-get update \
     && apt-get install -y /tmp/infisical.deb \
     && rm -f /tmp/infisical.deb \
@@ -103,27 +106,26 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # claude-context MCP (preinstall — npx at runtime races on native tree-sitter deps)
 RUN npm install -g @zilliz/claude-context-mcp@latest
 
-# CodeRabbit CLI (agent code review)
-# install.sh prints SUCCESS then can exit 2 under dash (`| sh`) or when updating
-# shell rc files in Docker. PATH already includes /home/opencode/.local/bin.
-RUN curl -fsSL https://cli.coderabbit.ai/install.sh | bash; \
-    test -x /home/opencode/.local/bin/coderabbit
-
 # Docker CLI only (no dockerd). Used when docker-compose.sandbox.yml mounts the
 # host socket so agents can create Sysbox sibling sandboxes. Without the socket
 # mount (Mac / OPENCODE_SANDBOX_MODE=off), `sandbox probe` reports unavailable.
 RUN install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-      | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
     && chmod a+r /etc/apt/keyrings/docker.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" \
-      > /etc/apt/sources.list.d/docker.list \
+    > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-# OpenCode CLI (installed to /home/opencode/.opencode/bin via curl installer)
-RUN curl -fsSL https://opencode.ai/install | bash
+# OpenCode CLI v2 (pinned). The v1 installer at https://opencode.ai/install
+# serves 1.x only and refuses to install 2.x — the v2 installer lives at
+# /v2/install. Pin for reproducible builds; bump deliberately via the
+# OPENCODE_VERSION build arg. Installs to /home/opencode/.opencode/bin (PATH).
+ARG OPENCODE_VERSION=2.3.0
+RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --version ${OPENCODE_VERSION} --no-modify-path \
+    && opencode --version
 
 # Agents, skills, opencode.json from GitHub (read-only at runtime)
 RUN git clone --depth 1 --branch "${CONFIG_REF}" "${CONFIG_REPO}" /home/opencode/.config/opencode \

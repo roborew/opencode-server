@@ -55,24 +55,42 @@ du -sh "${HOME}/.cache/opencode" 2>/dev/null || echo "~/.cache/opencode: (missin
 du -sh "${HOME}/.local/share/opencode/worktree" 2>/dev/null || echo "worktree dir: (missing)"
 
 hr "Host claude-context MCP flag"
-HOST_CFG="${HOME}/.config/opencode/opencode.json"
-if [[ -f "${HOST_CFG}" ]]; then
-  python3 - <<PY
-import json
-with open("${HOST_CFG}") as f:
-    d = json.load(f)
-cc = d.get("mcp", {}).get("claude-context", {})
-print("enabled =", cc.get("enabled"))
-print("(keep false while Desktop uses Docker; server MCP is separate)")
-PY
+HOST_CFG=""
+for candidate in "${HOME}/.config/opencode/opencode.jsonc" "${HOME}/.config/opencode/opencode.json"; do
+  if [[ -f "$candidate" ]]; then
+    HOST_CFG="$candidate"
+    break
+  fi
+done
+if [[ -n "${HOST_CFG}" ]]; then
+  python3 - "$HOST_CFG" "$REPO_ROOT" <<'PYCFG'
+import importlib.util, json, sys
+
+path, repo_root = sys.argv[1], sys.argv[2]
+try:
+    # Parse with the same JSONC rules the server uses (comments + trailing
+    # commas) by reusing merge-config.py — one source of truth.
+    spec = importlib.util.spec_from_file_location("merge_config", f"{repo_root}/docker/merge-config.py")
+    merge_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(merge_config)
+    text = open(path, encoding="utf-8").read()
+    d = json.loads(merge_config.strip_trailing_commas(merge_config.strip_jsonc(text)))
+except Exception as exc:
+    # An unreadable config must not abort the remaining diagnostics.
+    print(f"(could not parse {path}: {exc})")
+    raise SystemExit(0)
+cc = (d.get("mcp") or {}).get("servers", {}).get("claude-context", {})
+print("disabled =", cc.get("disabled", False))
+print("(keep true while Desktop uses Docker; the server MCP is separate)")
+PYCFG
 else
-  echo "(no ${HOST_CFG})"
+  echo "(no ~/.config/opencode/opencode.json[c])"
 fi
 
 hr "Server health (localhost)"
 load_env || true
 if [[ -n "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
-  curl -sf -u "$(opencode_auth)" "$(opencode_base_url)/global/health" && echo \
+  curl -sf -u "$(opencode_auth)" "$(opencode_base_url)/api/info" && echo \
     || echo "health check failed"
 else
   echo "OPENCODE_SERVER_PASSWORD unset — skip"
@@ -80,7 +98,7 @@ fi
 
 hr "Hints"
 cat <<'EOF'
-- Many host claude-context processes → quit Desktop, pkill -f claude-context-mcp, set mcp.claude-context.enabled=false in ~/.config/opencode/opencode.json
+- Many host claude-context processes → quit Desktop, pkill -f claude-context-mcp, set mcp.servers.claude-context.disabled=true in ~/.config/opencode/opencode.json(c)
 - After CONFIG_REPO/CONFIG_REF changes → docker compose build --no-cache opencode && docker compose up -d opencode (never down -v)
 - Idle without indexing → COMPOSE_PROFILES= docker compose up -d  (omit milvus profile) or: docker compose stop milvus-standalone milvus-minio etcd
 - Full doctor after a freeze: run this script while the UI is glitching

@@ -8,6 +8,10 @@ services:
   opencode:
     environment:
       OPENCODE_SANDBOX_ENABLED: "1"
+      # oc-sandbox plugin: with the socket mounted (control plane), the docker
+      # backend runs each slice's compose project isolated on the host daemon.
+      # Flips to sysbox when the blueprint §10 sidecar lands (ticket 09).
+      OC_SANDBOX_BACKEND: docker
       OPENCODE_SANDBOX_MODE: ${OPENCODE_SANDBOX_MODE:-auto}
       OPENCODE_SANDBOX_IMAGE: ${OPENCODE_SANDBOX_IMAGE:-opencode-sandbox:local}
       OPENCODE_SANDBOX_RUNTIME: ${OPENCODE_SANDBOX_RUNTIME:-sysbox-runc}

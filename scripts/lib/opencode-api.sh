@@ -159,20 +159,18 @@ opencode_base_url() {
 }
 
 opencode_auth() {
-  local user="${OPENCODE_SERVER_USERNAME:-}"
+  # OpenCode v2 hardcodes the basic-auth username to "opencode"
+  # (OPENCODE_SERVER_USERNAME is unsupported); only the password is
+  # configurable.
   local pass="${OPENCODE_SERVER_PASSWORD:-}"
   # Host .env often has Infisical bootstrap only — pull runtime auth from the
   # running container (.env compose injection or Infisical) when needed.
   if container_running; then
-    if [[ -z "$user" ]]; then
-      user="$(container_env_get OPENCODE_SERVER_USERNAME)"
-    fi
     if [[ -z "$pass" || "$pass" == "change-me" ]]; then
       pass="$(container_env_get OPENCODE_SERVER_PASSWORD)"
     fi
   fi
-  user="${user:-opencode}"
-  echo "${user}:${pass}"
+  echo "opencode:${pass}"
 }
 
 api_get() {
@@ -264,15 +262,59 @@ opencode_public_url() {
   echo "http://${fqdn}:${port}"
 }
 
+# v2 GET /api/session wraps the list in {"data": [...], "cursor": {...}} and
+# pages with an opaque cursor. Follow every page — a fixed limit can omit the
+# newest sessions (deregister_project must see all of them). Fails loudly so
+# callers do not treat an enumeration error as "no sessions".
 list_sessions_json() {
-  api_get "/session" 2>/dev/null || echo '[]'
+  local cursor="" raw pages="" page_count=0 sep
+  sep=$'\x1e' # record separator — cannot occur inside a JSON document
+  while :; do
+    local url="/api/session?limit=1000"
+    if [[ -n "$cursor" ]]; then
+      url="${url}&cursor=${cursor}"
+    else
+      url="${url}&order=asc"
+    fi
+    if ! raw="$(api_get "$url")"; then
+      echo "list_sessions_json: GET ${url} failed" >&2
+      return 1
+    fi
+    cursor="$(printf '%s' "$raw" | python3 -c '
+import json, sys, urllib.parse
+d = json.load(sys.stdin)
+print(urllib.parse.quote((d.get("cursor") or {}).get("next") or "", safe=""))
+')" || {
+      echo "list_sessions_json: unparseable session page" >&2
+      return 1
+    }
+    pages="${pages}${sep}${raw}"
+    page_count=$((page_count + 1))
+    if (( page_count > 1000 )); then
+      echo "list_sessions_json: too many session pages" >&2
+      return 1
+    fi
+    if [[ -z "$cursor" ]]; then
+      break
+    fi
+  done
+  printf '%s' "$pages" | python3 -c '
+import json, sys
+out = []
+for chunk in sys.stdin.read().split("\x1e"):
+    chunk = chunk.strip()
+    if not chunk:
+        continue
+    out.extend(json.loads(chunk).get("data") or [])
+print(json.dumps(out))
+'
 }
 
 wait_for_health() {
   local max_attempts="${1:-30}"
   local attempt=0
   while (( attempt < max_attempts )); do
-    if api_get "/global/health" >/dev/null 2>&1; then
+    if api_get "/api/info" >/dev/null 2>&1; then
       return 0
     fi
     attempt=$((attempt + 1))
@@ -327,7 +369,7 @@ docker_exec_xdg_it() {
 }
 
 list_projects_json() {
-  api_get "/project" 2>/dev/null || echo '[]'
+  api_get "/api/project" 2>/dev/null || echo '[]'
 }
 
 project_registered() {
@@ -340,7 +382,7 @@ import json, sys
 target = sys.argv[1].rstrip('/')
 data = json.loads(sys.argv[2])
 for p in data:
-    wt = (p.get('worktree') or p.get('directory') or '').rstrip('/')
+    wt = (p.get('canonical') or p.get('worktree') or p.get('directory') or '').rstrip('/')
     if wt == target:
         sys.exit(0)
 sys.exit(1)
@@ -356,8 +398,8 @@ register_project() {
     return 0
   fi
   local body
-  body="$(python3 -c 'import json,sys; print(json.dumps({"title": sys.argv[1]}))' "$title")"
-  api_post "/session" "$body" "X-Opencode-Directory: ${dir}" >/dev/null
+  body="$(python3 -c 'import json,sys; print(json.dumps({"title": sys.argv[1], "location": {"directory": sys.argv[2]}}))' "$title" "$dir")"
+  api_post "/api/session" "$body" >/dev/null
   echo "ok"
 }
 
@@ -380,8 +422,8 @@ data = json.loads(sys.argv[4] or '[]')
 used = {((p.get('icon') or {}).get('color') or '') for p in data if ((p.get('icon') or {}).get('color') or '') in valid}
 n = 0
 for p in data:
-    wt = (p.get('worktree') or '').rstrip('/')
-    if not root or not wt or wt == '/' or not (wt == root or wt.startswith(root + '/')):
+    wt = (p.get('canonical') or p.get('worktree') or '').rstrip('/')
+    if not root or wt == '/' or not (wt == root or wt.startswith(root + '/')):
         continue
     pid = p.get('id') or ''
     if not pid:
@@ -403,7 +445,7 @@ for p in data:
     if need_name:
         body['name'] = folder
     req = urllib.request.Request(
-        f'{base}/project/{pid}',
+        f'{base}/api/project/{pid}',
         data=json.dumps(body).encode(),
         method='PATCH',
         headers={
@@ -432,22 +474,21 @@ assign_missing_project_colors() {
 }
 
 # List sessions whose directory matches the worktree.
+# v2 Session.directory lives at location.directory (nested); filter
+# client-side (v1's X-Opencode-Directory header is gone).
 list_sessions_for_directory() {
   local dir="$1"
   local all
-  all="$(
-    curl -sf -u "$(opencode_auth)" \
-      -H "X-Opencode-Directory: ${dir}" \
-      "$(opencode_base_url)/session" 2>/dev/null \
-      || list_sessions_json
-  )"
+  if ! all="$(list_sessions_json)"; then
+    return 1
+  fi
   python3 -c "
 import json, sys
 dir_ = sys.argv[1]
 data = json.loads(sys.argv[2] or '[]')
 out = []
 for s in data:
-    d = s.get('directory') or ''
+    d = (s.get('location') or {}).get('directory') or s.get('directory') or ''
     if d == dir_ or d.rstrip('/') == dir_.rstrip('/'):
         out.append(s)
 print(json.dumps(out))
@@ -463,21 +504,25 @@ deregister_project() {
   local ok=0 fail=0
 
   local sessions ids
-  sessions="$(list_sessions_for_directory "$path")"
-  ids="$(python3 -c "
+  if ! sessions="$(list_sessions_for_directory "$path")"; then
+    echo "fail"
+    return 1
+  fi
+  if ! ids="$(python3 -c "
 import json, sys
 for s in json.loads(sys.argv[1] or '[]'):
     sid = s.get('id') or ''
     if sid:
         print(sid)
-" "$sessions")"
+" "$sessions")"; then
+    echo "fail"
+    return 1
+  fi
   if [[ -n "$ids" ]]; then
     local id
     while IFS= read -r id; do
       [[ -z "$id" ]] && continue
-      if api_delete "/session/${id}" >/dev/null 2>&1; then
-        ok=$((ok + 1))
-      elif api_delete "/session/${id}" "X-Opencode-Directory: ${path}" >/dev/null 2>&1; then
+      if api_delete "/api/session/${id}" >/dev/null 2>&1; then
         ok=$((ok + 1))
       else
         fail=$((fail + 1))
@@ -499,7 +544,7 @@ import json, sys
 root = sys.argv[1].rstrip('/')
 seen = set()
 for p in json.load(sys.stdin):
-    wt = (p.get('worktree') or '').rstrip('/')
+    wt = (p.get('canonical') or p.get('worktree') or '').rstrip('/')
     if not wt or not root:
         continue
     if wt == root or wt.startswith(root + '/'):
@@ -510,11 +555,11 @@ for p in json.load(sys.stdin):
 }
 
 list_mcp_json() {
-  api_get "/mcp" 2>/dev/null || echo '{}'
+  api_get "/api/mcp" 2>/dev/null || echo '{}'
 }
 
 list_providers_json() {
-  api_get "/provider" 2>/dev/null || echo '{}'
+  api_get "/api/provider" 2>/dev/null || echo '{}'
 }
 
 discover_local_git_roots() {

@@ -42,7 +42,7 @@ When OPENCODE_SANDBOX_ENABLED=0 / probe unavailable: soft-skip; no invented dock
 ## Deliverables
 1. skills/docker-sandbox/SKILL.md — division table, Caddy compose rules, expose + tunnel/DNS recipe
 2. skills/preflight/SKILL.md — soft sandbox probe; expose readiness from sandbox ready
-3. permission.skill docker-sandbox on developer, frontend-dev, verifier, preflight
+3. v2 `permissions` rule allowing the skill on developer, frontend-dev, verifier, preflight: `{ "action": "skill", "resource": "docker-sandbox", "effect": "allow" }`
 4. Orchestrate routing: agents/orchestrate.md + skills/orchestrate-execution — instruct Tasks to load docker-sandbox (orchestrate never loads it)
 5. CONTEXT / RUNBOOK / capability matrix — Sandbox, Review hostname, App vs server Infisical, rebuild after CONFIG_REF
 6. Note in RUNBOOK: review-app path is docker-sandbox + cloudflare-api via MCPJungle (DNS + existing tunnel hostname)

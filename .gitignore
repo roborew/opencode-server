@@ -1,3 +1,7 @@
 .env
 volumes/
 __pycache__/
+
+# Server state archives (session data + MCP auth tokens) — never commit these
+opencode-data.tgz
+*.tgz

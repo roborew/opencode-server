@@ -77,7 +77,7 @@ That removes the named volume (DB/auth). `--desktop` also clears this server’s
 | Change | Action |
 | ------ | ------ |
 | Agents/skills in config repo (incl. `docker-sandbox` / orchestrate wiring) | Push to GitHub on the `CONFIG_REF` branch → `docker compose build --no-cache opencode && docker compose up -d opencode` (never `down -v`) |
-| Container MCP/workspace overrides | Edit `overrides/opencode.server.json` → rebuild |
+| Container MCP/config overrides | Edit `overrides/opencode.server.json` → rebuild |
 | Local CLI config | Edit `~/.config/opencode` as usual (unaffected by this stack) |
 
 After changing `CONFIG_REPO` / `CONFIG_REF`, rebuild so the image picks up config: `docker compose build --no-cache opencode && docker compose up -d opencode` (never `down -v`).

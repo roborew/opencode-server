@@ -188,7 +188,6 @@ install_override_plugins() {
   fi
   mkdir -p "$dest"
   cp -f "$src"/*.js "$dest"/ 2>/dev/null || true
-  rm -f "${dest}/dedupe-worktree-sandboxes.js"
   if compgen -G "$dest"/*.js >/dev/null; then
     echo "opencode-entrypoint: installed plugins from ${src} → ${dest}" >&2
   fi
@@ -198,7 +197,8 @@ setup_container_data_layout
 
 install_override_plugins
 
-# Apply deployment overrides into cloned opencode.json (OPENCODE_CONFIG env alone does not deep-merge MCP)
+# Apply deployment overrides into the cloned config (opencode.jsonc from
+# opencode-config-v2): deep-merge mcp.servers, append server plugins.
 python3 /usr/local/bin/merge-config.py
 unset OPENCODE_CONFIG
 
@@ -206,11 +206,6 @@ unset OPENCODE_CONFIG
 mkdir -p /home/opencode/.config/gh
 if [[ -n "${GH_TOKEN:-}" ]]; then
   echo "${GH_TOKEN}" | gh auth login --with-token 2>/dev/null || true
-fi
-
-# CodeRabbit CLI token auth when CODERABBIT_API_KEY is set
-if [[ -n "${CODERABBIT_API_KEY:-}" ]]; then
-  coderabbit auth login --api-key "${CODERABBIT_API_KEY}" 2>/dev/null || true
 fi
 
 
@@ -227,9 +222,6 @@ if [[ -n "${OPENCODE_WORKTREES_DIR:-}${OPENCODE_APPS_DIR:-}" && -f /usr/local/bi
   setsid python3 /usr/local/bin/rewrite-worktree-gitdirs.py >/dev/null 2>&1 &
 fi
 
-# Workspace create/delete needs this flag (otherwise startSync is a no-op and
-# create times out waiting for workspace.status).
-export OPENCODE_EXPERIMENTAL_WORKSPACES="${OPENCODE_EXPERIMENTAL_WORKSPACES:-true}"
 export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"
 
 run_cmd() {

@@ -35,7 +35,6 @@ run_preflight() {
   check_opencode_data_volume
   check_milvus
   check_gh_auth
-  check_coderabbit_auth
   check_providers
   check_twingate_connector
   check_mcps
@@ -266,7 +265,7 @@ check_opencode_health() {
 
   # Readiness can lag right after recreate (entrypoint + serve + bridge).
   for attempt in {1..20}; do
-    if health="$(api_get "/global/health" 2>/dev/null)"; then
+    if health="$(api_get "/api/info" 2>/dev/null)"; then
       if command -v python3 >/dev/null 2>&1; then
         version="$(echo "$health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('version','?'))" 2>/dev/null || echo '?')"
       else
@@ -275,7 +274,7 @@ check_opencode_health() {
       preflight_record ok "opencode-server healthy (v${version})"
       return
     fi
-    code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/global/health" 2>/dev/null || true)"
+    code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/api/info" 2>/dev/null || true)"
     code="${code:-000}"
     if [[ "$code" == "401" ]]; then
       break
@@ -315,7 +314,7 @@ check_opencode_health() {
           --env="${INFISICAL_ENV:-dev}" \
           --domain="$domain" \
           --token="$token" \
-          -- sh -c "curl -sf -u \"\${OPENCODE_SERVER_USERNAME:-opencode}:\${OPENCODE_SERVER_PASSWORD}\" \"http://127.0.0.1:${port}/global/health\"" \
+          -- sh -c "curl -sf -u \"opencode:\${OPENCODE_SERVER_PASSWORD}\" \"http://127.0.0.1:${port}/api/info\"" \
           2>/dev/null
       )" || health=""
       if [[ -n "$health" ]]; then
@@ -330,7 +329,7 @@ check_opencode_health() {
     fi
   fi
 
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/global/health" 2>/dev/null || true)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/api/info" 2>/dev/null || true)"
   code="${code:-000}"
   if [[ "$code" == "401" ]]; then
     preflight_record warn \
@@ -405,7 +404,7 @@ check_fqdn_local() {
   if [[ -n "$resolved" ]]; then
     curl_args+=(--resolve "${fqdn}:${port}:${resolved}")
   fi
-  code="$(curl "${curl_args[@]}" "${url}/global/health" 2>/dev/null || true)"
+  code="$(curl "${curl_args[@]}" "${url}/api/info" 2>/dev/null || true)"
   code="${code:-000}"
   if [[ "$code" == "200" ]]; then
     preflight_record ok "local FQDN reachable" "$url"
@@ -648,18 +647,6 @@ check_gh_auth() {
   fi
 }
 
-check_coderabbit_auth() {
-  if ! container_running; then
-    return
-  fi
-  if docker_exec coderabbit auth status >/dev/null 2>&1; then
-    preflight_record ok "coderabbit auth (Agentic API key)"
-  else
-    preflight_record warn "coderabbit auth failed" \
-      "set CODERABBIT_API_KEY in .env or Infisical (Agentic key from CodeRabbit dashboard)"
-  fi
-}
-
 check_providers() {
   if ! container_running; then
     return
@@ -671,15 +658,17 @@ check_providers() {
     connected="$(echo "$providers" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
-c = d.get('connected', [])
-print(len(c) if isinstance(c, list) else 0)
+if isinstance(d, dict):
+    d = d.get('data') or []
+c = [p for p in d if isinstance(p, dict) and (p.get('integrationID') or p.get('activation') == 'enabled')]
+print(len(c))
 " 2>/dev/null || echo 0)"
   fi
   if [[ "$connected" -gt 0 ]]; then
     preflight_record ok "provider(s) connected (${connected})"
   else
     preflight_record warn "no provider auth detected" \
-      "set OPENROUTER_API_KEY in .env or Infisical, or connect via server UI"
+      "set OPENCODE_API_KEY in .env or Infisical, or connect via server UI"
   fi
 }
 
@@ -719,14 +708,19 @@ check_mcps() {
 import json, sys, os
 
 data = json.load(sys.stdin)
-for name, info in sorted(data.items()):
+if isinstance(data, dict):
+    data = data.get('data') or []
+for info in sorted(data, key=lambda i: (i.get('name') or '')):
     if not isinstance(info, dict):
         continue
-    enabled = info.get('enabled', True)
-    if enabled is False:
+    name = info.get('name') or 'unknown'
+    status = info.get('status')
+    if isinstance(status, dict):
+        status = status.get('status') or 'unknown'
+    status = status or 'unknown'
+    if status == 'disabled':
         print(f'disabled|{name}')
         continue
-    status = info.get('status') or info.get('state') or 'unknown'
     print(f'{status}|{name}')
 " 2>/dev/null || true)"
 
