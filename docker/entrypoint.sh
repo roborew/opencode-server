@@ -188,7 +188,6 @@ install_override_plugins() {
   fi
   mkdir -p "$dest"
   cp -f "$src"/*.js "$dest"/ 2>/dev/null || true
-  rm -f "${dest}/dedupe-worktree-sandboxes.js"
   if compgen -G "$dest"/*.js >/dev/null; then
     echo "opencode-entrypoint: installed plugins from ${src} → ${dest}" >&2
   fi

@@ -134,28 +134,15 @@ def merge_plugins(base: dict, overlay: dict) -> dict:
     return base
 
 
-def normalize_legacy_mcp_server(entry: dict) -> dict:
-    """Convert a v1 MCP server entry to the v2 shape.
-
-    v2 spells "off" as `disabled`; the legacy `enabled` flag is inverted so the
-    server really ends up disabled (v2 ignores the unknown `enabled` key).
-    """
-    if "enabled" not in entry:
-        return entry
-    normalized = {k: v for k, v in entry.items() if k != "enabled"}
-    if "disabled" not in normalized:
-        normalized["disabled"] = not bool(entry["enabled"])
-    return normalized
-
-
 def apply_env_overrides(overlay: dict) -> dict:
-    # Allow host same-path apps + worktree mounts (no /workspace legacy path).
-    ext = overlay.setdefault("permission", {}).setdefault("external_directory", {})
-    ext.setdefault("/var/opencode-xdg/opencode/worktree/**", "allow")
+    # Allow the host same-path apps + worktree mounts. v2 expresses this as an
+    # ordered `permissions` array: `external_directory` decides whether a path
+    # outside the project is prompted for.
+    rules = overlay.setdefault("permissions", [])
     for env_key in ("OPENCODE_WORKTREES_DIR", "OPENCODE_APPS_DIR"):
         path = os.environ.get(env_key, "").strip().rstrip("/")
         if path:
-            ext[f"{path}/**"] = "allow"
+            rules.append({"action": "external_directory", "resource": f"{path}/*", "effect": "allow"})
 
     # {env:...} placeholders are NOT resolved here. OpenCode substitutes them at
     # config load, which happens AFTER the in-container Infisical inject.
@@ -190,24 +177,15 @@ def main() -> int:
     overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
     overlay = apply_env_overrides(overlay)
 
-    # Legacy tolerance: an overlay in the v1 shape (server names directly under
-    # mcp) is normalized into mcp.servers before merging.
-    mcp = overlay.get("mcp")
-    if isinstance(mcp, dict) and "servers" not in mcp and any(
-        isinstance(v, dict) and ("command" in v or "url" in v or "disabled" in v or "enabled" in v)
-        for v in mcp.values()
-    ):
-        overlay["mcp"] = {
-            "servers": {
-                name: normalize_legacy_mcp_server(v) if isinstance(v, dict) else v
-                for name, v in mcp.items()
-            }
-        }
-
     # plugins must merge by concatenation, not replacement — pop the overlay's
     # array before the deep merge, then concat onto the untouched base list.
     overlay_plugins = overlay.pop("plugins", None)
+    # `permissions` is an ordered rule list (last match wins), so the overlay's
+    # rules are appended to the base's instead of replacing them.
+    overlay_permissions = overlay.pop("permissions", None)
     base = deep_merge(base, overlay)
+    if overlay_permissions is not None:
+        base["permissions"] = (base.get("permissions") or []) + overlay_permissions
     if overlay_plugins is not None:
         base = merge_plugins(base, {"plugins": overlay_plugins})
 

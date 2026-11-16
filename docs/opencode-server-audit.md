@@ -24,7 +24,7 @@ From the official [migration guide](https://dev.opencode.ai/docs/migrate-v1/) �
 
 - `opencode serve --hostname 0.0.0.0 --port 4097` — same command, same flags ([docs](https://opencode.ai/docs/cli/commands/), [openwork adapter](https://github.com/different-ai/openwork/blob/dev/docs/opencode-v2-parallel-lane.md)).
 - `OPENCODE_SERVER_PASSWORD` still works; HTTP Basic auth unchanged.
-- Config locations unchanged: `OPENCODE_CONFIG_DIR` (`~/.config/opencode`) is honored by v2; your cloned config repo + `merge-config.py` overlay keeps working. V1-shaped `permission` maps and `mcp` blocks are normalized in memory (not rewritten on disk).
+- Config locations unchanged: `OPENCODE_CONFIG_DIR` (`~/.config/opencode`) is honored by v2; your cloned config repo + `merge-config.py` overlay keeps working. v2 does normalize V1-shaped `permission` maps and `mcp` blocks in memory (not rewritten on disk) — but the deployment overlay is v2-native and does not rely on that compatibility layer.
 - Agents, skills, commands, AGENTS.md from the config repo keep working.
 - XDG data paths unchanged: `XDG_DATA_HOME=/var/opencode-xdg` is respected; the SQLite DB is still `opencode.db`; worktrees still land in `~/.local/share/opencode/worktree/<project-id>/<name>` — your same-path bind mounts and the entrypoint's volume symlinks survive ([storage reference](https://opencode.ai/docs/references), [doubleagent teardown](https://github.com/seanthegeek/doubleagent/blob/main/research/opencode.md)).
 - Sysbox sandbox path is orthogonal to the OpenCode version: the `sandbox` CLI, `sysbox-runc` sibling flow, and the `docker-compose.sandbox.yml` socket mount are unaffected by the v1→v2 upgrade. (Keep the Docker ≥29.5 time-namespace workaround in `docs/sandbox.md` as-is.)

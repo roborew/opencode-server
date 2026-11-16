@@ -55,18 +55,30 @@ du -sh "${HOME}/.cache/opencode" 2>/dev/null || echo "~/.cache/opencode: (missin
 du -sh "${HOME}/.local/share/opencode/worktree" 2>/dev/null || echo "worktree dir: (missing)"
 
 hr "Host claude-context MCP flag"
-HOST_CFG="${HOME}/.config/opencode/opencode.json"
-if [[ -f "${HOST_CFG}" ]]; then
-  python3 - <<PY
-import json
-with open("${HOST_CFG}") as f:
-    d = json.load(f)
-cc = d.get("mcp", {}).get("claude-context", {})
-print("enabled =", cc.get("enabled"))
-print("(keep false while Desktop uses Docker; server MCP is separate)")
-PY
+HOST_CFG=""
+for candidate in "${HOME}/.config/opencode/opencode.jsonc" "${HOME}/.config/opencode/opencode.json"; do
+  if [[ -f "$candidate" ]]; then
+    HOST_CFG="$candidate"
+    break
+  fi
+done
+if [[ -n "${HOST_CFG}" ]]; then
+  python3 - "$HOST_CFG" <<'PYCFG'
+import json, re, sys
+
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+try:
+    d = json.loads(text)
+except json.JSONDecodeError:
+    # .jsonc may carry comments — strip line comments before parsing
+    d = json.loads(re.sub(r"^\s*//.*$", "", text, flags=re.M))
+cc = (d.get("mcp") or {}).get("servers", {}).get("claude-context", {})
+print("disabled =", cc.get("disabled", False))
+print("(keep true while Desktop uses Docker; the server MCP is separate)")
+PYCFG
 else
-  echo "(no ${HOST_CFG})"
+  echo "(no ~/.config/opencode/opencode.json[c])"
 fi
 
 hr "Server health (localhost)"
