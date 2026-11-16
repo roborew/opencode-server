@@ -80,7 +80,7 @@ fi
 
 hr "Hints"
 cat <<'EOF'
-- Many host claude-context processes → quit Desktop, pkill -f claude-context-mcp, set mcp.claude-context.enabled=false in ~/.config/opencode/opencode.json
+- Many host claude-context processes → quit Desktop, pkill -f claude-context-mcp, set mcp.servers.claude-context.disabled=true in ~/.config/opencode/opencode.json(c)
 - After CONFIG_REPO/CONFIG_REF changes → docker compose build --no-cache opencode && docker compose up -d opencode (never down -v)
 - Idle without indexing → COMPOSE_PROFILES= docker compose up -d  (omit milvus profile) or: docker compose stop milvus-standalone milvus-minio etcd
 - Full doctor after a freeze: run this script while the UI is glitching

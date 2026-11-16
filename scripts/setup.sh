@@ -463,6 +463,14 @@ sync_projects() {
     list_projects_json | python3 -m json.tool 2>/dev/null || list_projects_json
   fi
 
+  # A failed deregister leaves the old sessions registered — surface it as a
+  # non-zero exit instead of a summary line nobody reads.
+  local sync_rc=0
+  if (( fail_add > 0 || fail_rm > 0 )); then
+    echo "Sync finished with failures (add=${fail_add} rm=${fail_rm})." >&2
+    sync_rc=1
+  fi
+
   if [[ "$DRY_RUN" != "1" ]]; then
     ensure_repos_env ${desired[@]+"${desired[@]}"}
   fi
@@ -470,7 +478,7 @@ sync_projects() {
   if [[ "$SKIP_BOOTSTRAP" == "1" ]]; then
     echo
     echo "Skipped client bootstrap (--skip-bootstrap)."
-    return
+    return "$sync_rc"
   fi
 
   if [[ "${PREFLIGHT_HOSTS_PREPARED}" == "1" ]]; then
@@ -478,6 +486,7 @@ sync_projects() {
   else
     run_client_bootstrap ${desired[@]+"${desired[@]}"}
   fi
+  return "$sync_rc"
 }
 
 run_bootstrap_only() {

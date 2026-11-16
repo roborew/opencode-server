@@ -52,28 +52,30 @@ def _is_protected_project_root(path: str) -> bool:
     return path == HOST_APPS or path.startswith(HOST_APPS + "/")
 
 
-def _blocked_worktree_delete(body: bytes) -> str | None:
-    try:
-        data = json.loads(body.decode("utf-8") or "{}")
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    directory = (data.get("directory") or "").rstrip("/")
-    if directory and _is_protected_project_root(directory):
-        return directory
-    return None
-
-
 def _parse_worktree_delete_body(raw: bytes) -> tuple[str, str]:
-    """Return (directory, projectID) from a v2 DELETE /api/worktree body."""
+    """Return (directory, projectID) from a v2 DELETE /api/worktree body.
+
+    Non-object bodies and non-string directories yield empty values so the
+    protected-root check is skipped and the request still reaches the upstream
+    for validation.
+    """
     try:
         data = json.loads(raw.decode("utf-8") or "{}")
     except (UnicodeDecodeError, json.JSONDecodeError):
         return "", ""
     if not isinstance(data, dict):
         return "", ""
-    directory = (data.get("directory") or "").rstrip("/")
+    raw_dir = data.get("directory")
+    directory = raw_dir.rstrip("/") if isinstance(raw_dir, str) else ""
     project = str(data.get("projectID") or "")
     return directory, project
+
+
+def _blocked_worktree_delete(body: bytes) -> str | None:
+    directory, _ = _parse_worktree_delete_body(body)
+    if directory and _is_protected_project_root(directory):
+        return directory
+    return None
 
 
 def _schedule_git_cleanup(directory: str, project: str = "") -> None:

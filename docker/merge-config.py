@@ -2,14 +2,14 @@
 """Merge deployment overrides into the cloned OpenCode config (v2: opencode.jsonc).
 
 The config repo (opencode-config-v2) ships `opencode.jsonc` — JSON with comments.
-This script finds it (or a plain opencode.json), parses it tolerantly, deep-merges
-the deployment overlay on top, appends the server plugins to the `plugins` array,
+This script finds it (or a plain opencode.json), parses it tolerantly the way the
+pinned runtime does (JSONC: comments + trailing commas), deep-merges the
+deployment overlay on top, appends the server plugins to the `plugins` array,
 and writes the result back to the same file as strict JSON.
 
-{env:...} placeholders are left untouched unless the variable is already present
-in the environment at merge time: OpenCode performs env substitution at config
-load, which happens AFTER the Infisical inject — so Infisical-held secrets must
-stay as placeholders here.
+{env:...} placeholders are left untouched: OpenCode performs env substitution at
+config load, which happens AFTER the Infisical inject — so Infisical-held secrets
+must stay as placeholders here.
 """
 from __future__ import annotations
 
@@ -59,11 +59,52 @@ def strip_jsonc(text: str) -> str:
     return "".join(out)
 
 
+def strip_trailing_commas(text: str) -> str:
+    """Drop commas that precede a closing brace/bracket (JSONC trailing commas).
+
+    OpenCode 2.3.0 parses config with jsonc-parser's allowTrailingComma, so a
+    document its parser accepts must survive this loader too. Commas inside
+    quoted strings are left alone.
+    """
+    out = []
+    i = 0
+    n = len(text)
+    in_string = False
+    escaped = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "}]":
+                i += 1  # trailing comma — drop it, keep the whitespace
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def load_config(path: Path) -> dict:
     text = path.read_text(encoding="utf-8")
     if path.suffix == ".jsonc":
         text = strip_jsonc(text)
-    return json.loads(text)
+    return json.loads(strip_trailing_commas(text))
 
 
 def deep_merge(base: dict, overlay: dict) -> dict:
@@ -93,6 +134,20 @@ def merge_plugins(base: dict, overlay: dict) -> dict:
     return base
 
 
+def normalize_legacy_mcp_server(entry: dict) -> dict:
+    """Convert a v1 MCP server entry to the v2 shape.
+
+    v2 spells "off" as `disabled`; the legacy `enabled` flag is inverted so the
+    server really ends up disabled (v2 ignores the unknown `enabled` key).
+    """
+    if "enabled" not in entry:
+        return entry
+    normalized = {k: v for k, v in entry.items() if k != "enabled"}
+    if "disabled" not in normalized:
+        normalized["disabled"] = not bool(entry["enabled"])
+    return normalized
+
+
 def apply_env_overrides(overlay: dict) -> dict:
     # Allow host same-path apps + worktree mounts (no /workspace legacy path).
     ext = overlay.setdefault("permission", {}).setdefault("external_directory", {})
@@ -102,20 +157,11 @@ def apply_env_overrides(overlay: dict) -> dict:
         if path:
             ext[f"{path}/**"] = "allow"
 
-    # Resolve {env:...} placeholders ONLY when the variable is already set
-    # (compose env_file). Infisical-held values stay as placeholders for
-    # OpenCode to substitute after the inject.
-    def resolve_env_strings(node):
-        if isinstance(node, dict):
-            return {k: resolve_env_strings(v) for k, v in node.items()}
-        if isinstance(node, list):
-            return [resolve_env_strings(v) for v in node]
-        if isinstance(node, str) and node.startswith("{env:") and node.endswith("}"):
-            value = os.environ.get(node[5:-1])
-            return node if value is None else value
-        return node
-
-    return resolve_env_strings(overlay)
+    # {env:...} placeholders are NOT resolved here. OpenCode substitutes them at
+    # config load, which happens AFTER the in-container Infisical inject.
+    # Substituting now would bake in the pre-inject value (often empty, or
+    # stale) and the placeholder could never be repaired afterwards.
+    return overlay
 
 
 def main() -> int:
@@ -151,7 +197,12 @@ def main() -> int:
         isinstance(v, dict) and ("command" in v or "url" in v or "disabled" in v or "enabled" in v)
         for v in mcp.values()
     ):
-        overlay["mcp"] = {"servers": mcp}
+        overlay["mcp"] = {
+            "servers": {
+                name: normalize_legacy_mcp_server(v) if isinstance(v, dict) else v
+                for name, v in mcp.items()
+            }
+        }
 
     # plugins must merge by concatenation, not replacement — pop the overlay's
     # array before the deep merge, then concat onto the untouched base list.

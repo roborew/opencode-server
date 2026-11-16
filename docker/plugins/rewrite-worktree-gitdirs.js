@@ -77,7 +77,9 @@ export default await definePlugin({
           scheduleBurst(["scrub"], [500, 1500, 3000]);
         }
       }
-    })().catch(() => { });
+    })().catch((error) => {
+      console.error("rewrite-worktree-gitdirs: event subscription stopped:", error);
+    });
 
     return () => controller.abort();
   },

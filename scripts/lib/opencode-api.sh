@@ -262,20 +262,52 @@ opencode_public_url() {
   echo "http://${fqdn}:${port}"
 }
 
-# v2 GET /api/session wraps the list in {"data": [...], "cursor": ...} and
-# defaults to the newest 50 — unwrap to a plain array and widen the page.
+# v2 GET /api/session wraps the list in {"data": [...], "cursor": {...}} and
+# pages with an opaque cursor. Follow every page — a fixed limit can omit the
+# newest sessions (deregister_project must see all of them). Fails loudly so
+# callers do not treat an enumeration error as "no sessions".
 list_sessions_json() {
-  api_get "/api/session?limit=1000&order=asc" 2>/dev/null | python3 -c "
+  local cursor="" raw pages="" page_count=0 sep
+  sep=$'\x1e' # record separator — cannot occur inside a JSON document
+  while :; do
+    local url="/api/session?limit=1000"
+    if [[ -n "$cursor" ]]; then
+      url="${url}&cursor=${cursor}"
+    else
+      url="${url}&order=asc"
+    fi
+    if ! raw="$(api_get "$url")"; then
+      echo "list_sessions_json: GET ${url} failed" >&2
+      return 1
+    fi
+    cursor="$(printf '%s' "$raw" | python3 -c '
+import json, sys, urllib.parse
+d = json.load(sys.stdin)
+print(urllib.parse.quote((d.get("cursor") or {}).get("next") or "", safe=""))
+')" || {
+      echo "list_sessions_json: unparseable session page" >&2
+      return 1
+    }
+    pages="${pages}${sep}${raw}"
+    page_count=$((page_count + 1))
+    if (( page_count > 1000 )); then
+      echo "list_sessions_json: too many session pages" >&2
+      return 1
+    fi
+    if [[ -z "$cursor" ]]; then
+      break
+    fi
+  done
+  printf '%s' "$pages" | python3 -c '
 import json, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    print('[]')
-    raise SystemExit(0)
-if isinstance(d, dict):
-    d = d.get('data') or []
-print(json.dumps(d))
-" 2>/dev/null || echo '[]'
+out = []
+for chunk in sys.stdin.read().split("\x1e"):
+    chunk = chunk.strip()
+    if not chunk:
+        continue
+    out.extend(json.loads(chunk).get("data") or [])
+print(json.dumps(out))
+'
 }
 
 wait_for_health() {
@@ -447,7 +479,9 @@ assign_missing_project_colors() {
 list_sessions_for_directory() {
   local dir="$1"
   local all
-  all="$(list_sessions_json)"
+  if ! all="$(list_sessions_json)"; then
+    return 1
+  fi
   python3 -c "
 import json, sys
 dir_ = sys.argv[1]
@@ -470,14 +504,20 @@ deregister_project() {
   local ok=0 fail=0
 
   local sessions ids
-  sessions="$(list_sessions_for_directory "$path")"
-  ids="$(python3 -c "
+  if ! sessions="$(list_sessions_for_directory "$path")"; then
+    echo "fail"
+    return 1
+  fi
+  if ! ids="$(python3 -c "
 import json, sys
 for s in json.loads(sys.argv[1] or '[]'):
     sid = s.get('id') or ''
     if sid:
         print(sid)
-" "$sessions")"
+" "$sessions")"; then
+    echo "fail"
+    return 1
+  fi
   if [[ -n "$ids" ]]; then
     local id
     while IFS= read -r id; do
