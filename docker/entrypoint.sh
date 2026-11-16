@@ -198,7 +198,8 @@ setup_container_data_layout
 
 install_override_plugins
 
-# Apply deployment overrides into cloned opencode.json (OPENCODE_CONFIG env alone does not deep-merge MCP)
+# Apply deployment overrides into the cloned config (opencode.jsonc from
+# opencode-config-v2): deep-merge mcp.servers, append server plugins.
 python3 /usr/local/bin/merge-config.py
 unset OPENCODE_CONFIG
 
@@ -206,11 +207,6 @@ unset OPENCODE_CONFIG
 mkdir -p /home/opencode/.config/gh
 if [[ -n "${GH_TOKEN:-}" ]]; then
   echo "${GH_TOKEN}" | gh auth login --with-token 2>/dev/null || true
-fi
-
-# CodeRabbit CLI token auth when CODERABBIT_API_KEY is set
-if [[ -n "${CODERABBIT_API_KEY:-}" ]]; then
-  coderabbit auth login --api-key "${CODERABBIT_API_KEY}" 2>/dev/null || true
 fi
 
 

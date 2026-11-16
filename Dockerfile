@@ -2,7 +2,7 @@
 # Runtime secrets via Infisical (deployed) or compose .env (local).
 FROM ubuntu:24.04
 
-ARG CONFIG_REPO=https://github.com/roborew/opencode-config.git
+ARG CONFIG_REPO=https://github.com/roborew/opencode-config-v2.git
 ARG CONFIG_REF=main
 ARG INFISICAL_CLI_VERSION=0.43.84
 # mikefarah/yq v4 — PRD frontmatter, registry/label sync, legacy slices fanout
@@ -102,12 +102,6 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 # claude-context MCP (preinstall — npx at runtime races on native tree-sitter deps)
 RUN npm install -g @zilliz/claude-context-mcp@latest
-
-# CodeRabbit CLI (agent code review)
-# install.sh prints SUCCESS then can exit 2 under dash (`| sh`) or when updating
-# shell rc files in Docker. PATH already includes /home/opencode/.local/bin.
-RUN curl -fsSL https://cli.coderabbit.ai/install.sh | bash; \
-    test -x /home/opencode/.local/bin/coderabbit
 
 # Docker CLI only (no dockerd). Used when docker-compose.sandbox.yml mounts the
 # host socket so agents can create Sysbox sibling sandboxes. Without the socket

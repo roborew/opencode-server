@@ -35,7 +35,6 @@ run_preflight() {
   check_opencode_data_volume
   check_milvus
   check_gh_auth
-  check_coderabbit_auth
   check_providers
   check_twingate_connector
   check_mcps
@@ -648,18 +647,6 @@ check_gh_auth() {
   fi
 }
 
-check_coderabbit_auth() {
-  if ! container_running; then
-    return
-  fi
-  if docker_exec coderabbit auth status >/dev/null 2>&1; then
-    preflight_record ok "coderabbit auth (Agentic API key)"
-  else
-    preflight_record warn "coderabbit auth failed" \
-      "set CODERABBIT_API_KEY in .env or Infisical (Agentic key from CodeRabbit dashboard)"
-  fi
-}
-
 check_providers() {
   if ! container_running; then
     return
@@ -681,7 +668,7 @@ print(len(c))
     preflight_record ok "provider(s) connected (${connected})"
   else
     preflight_record warn "no provider auth detected" \
-      "set OPENROUTER_API_KEY in .env or Infisical, or connect via server UI"
+      "set OPENCODE_API_KEY in .env or Infisical, or connect via server UI"
   fi
 }
 

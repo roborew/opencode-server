@@ -110,7 +110,7 @@ Two injection points, both **runtime only** (never build-time). Preflight verifi
 
 **`.env` holds**: Infisical bootstrap (`INFISICAL_PROJECT_ID`, `INFISICAL_DOMAIN`, `INFISICAL_CLIENT_ID`+`SECRET` or `INFISICAL_TOKEN`), host-local `OPENCODE_UID`/`OPENCODE_GID`, optional non-secret config (ports, `OPENCODE_FQDN`).
 
-**Infisical holds (preferred)**: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GH_TOKEN`/`GH_ORG`/`GH_PROJECT`, `GIT_USER_NAME`/`GIT_USER_EMAIL`, `CODERABBIT_API_KEY`, `OPENCODE_APPS_DIR`, `OPENCODE_WORKTREES_DIR`.
+**Infisical holds (preferred)**: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, `MCPJUNGLE_TOKEN`, `GH_TOKEN`/`GH_ORG`/`GH_PROJECT`, `GIT_USER_NAME`/`GIT_USER_EMAIL`, `OPENCODE_APPS_DIR`, `OPENCODE_WORKTREES_DIR`.
 
 Set `INFISICAL_USE_CLI=false` to bypass in-container Infisical (host `.env` then becomes authoritative — only do this for tests).
 
@@ -202,13 +202,10 @@ If `sandbox probe` returns `"available": false` (or exit 2, reason `SANDBOX_UNAV
 docker exec -u "${OPENCODE_UID:-1000}:${OPENCODE_GID:-1000}" opencode-server <cmd>
 
 # Inspect what the running container actually sees (runtime secrets land here):
-docker exec opencode-server env | grep -E '^(OPENCODE|GH_|OPENAI|OPENROUTER|TWINGATE|MILVUS)'
+docker exec opencode-server env | grep -E '^(OPENCODE|GH_|OPENAI|MCPJUNGLE|OC_SANDBOX|TWINGATE|MILVUS)'
 
 # gh auth status (uses GH_TOKEN injected by Infisical or compose env_file):
 docker exec opencode-server gh auth status
-
-# CodeRabbit CLI review of uncommitted changes in a mounted repo:
-docker exec -w "$OPENCODE_APPS_DIR/<repo>" opencode-server coderabbit --agent -t uncommitted
 
 # Discover git repos visible inside the container:
 docker exec opencode-server find "$OPENCODE_APPS_DIR" -name .git -type d -prune
@@ -236,8 +233,7 @@ From `scripts/lib/preflight.sh` — the source of truth:
 - `opencode-data` volume health
 - Milvus reachable + `OPENAI_API_KEY` set (when `COMPOSE_PROFILES=milvus`)
 - `gh auth status` + fine-grained PAT capabilities
-- `coderabbit auth status` when `CODERABBIT_API_KEY` is set
-- Provider keys (`OPENROUTER_API_KEY` etc.)
+- Provider keys (`OPENCODE_API_KEY`, `MCPJUNGLE_TOKEN` etc.)
 - Twingate connector reachability
 - Each enabled MCP reachable via `GET /mcp`
 
@@ -267,7 +263,7 @@ Failures block `./scripts/setup.sh projects ...` unless `--force`.
 - Lifecycle detail: [`docs/setup.md`](docs/setup.md)
 - Env vars: [`docs/environment.md`](docs/environment.md)
 - Twingate + port wiring: [`docs/access.md`](docs/access.md)
-- MCP, GitHub PAT, CodeRabbit: [`docs/integrations.md`](docs/integrations.md)
+- MCP, GitHub PAT: [`docs/integrations.md`](docs/integrations.md)
 - Sysbox sibling sandboxes: [`docs/sandbox.md`](docs/sandbox.md)
 - Failure catalog: [`docs/troubleshooting.md`](docs/troubleshooting.md)
 

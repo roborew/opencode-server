@@ -2,7 +2,7 @@
 
 Self-contained Docker Compose stack for a headless OpenCode server, Twingate remote access, and optional Milvus-backed `claude-context` indexing.
 
-**Build and run only from this directory.** Agents, skills, and `opencode.json` are cloned from [github.com/roborew/opencode-config](https://github.com/roborew/opencode-config) at image build time (`CONFIG_REPO` / `CONFIG_REF`). Your local `~/.config/opencode` checkout is never mounted into the image. After pushing agent/skill changes (e.g. `docker-sandbox` / orchestrate wiring) to the `CONFIG_REF` branch, rebuild: `docker compose build --no-cache opencode && docker compose up -d opencode` (never `down -v`).
+**Build and run only from this directory.** The config (`opencode.jsonc`, agents, commands, skills, plugins) is cloned from [github.com/roborew/opencode-config-v2](https://github.com/roborew/opencode-config-v2) at image build time (`CONFIG_REPO` / `CONFIG_REF`). Your local `~/.config/opencode` checkout is never mounted into the image. After pushing config changes to the `CONFIG_REF` branch, rebuild: `docker compose build --no-cache opencode && docker compose up -d opencode` (never `down -v`).
 
 ## What's in the stack
 
@@ -74,7 +74,7 @@ Connect remotely (with Twingate): `http://opencode.local:4097`, or from a v2 CLI
 | Setup script, projects, workspaces                        | [docs/setup.md](docs/setup.md)                     |
 | Environment variables & Infisical                         | [docs/environment.md](docs/environment.md)         |
 | Twingate, ports, hosts, localhost rewrite                 | [docs/access.md](docs/access.md)                   |
-| Claude Context, GitHub, CodeRabbit, managed MCP upstreams | [docs/integrations.md](docs/integrations.md)       |
+| Claude Context, GitHub, managed MCP upstreams | [docs/integrations.md](docs/integrations.md)       |
 | Sysbox sibling sandboxes (Ubuntu)                         | [docs/sandbox.md](docs/sandbox.md)                 |
 | Troubleshooting                                           | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Docs index                                                | [docs/README.md](docs/README.md)                   |

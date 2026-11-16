@@ -9,28 +9,29 @@
   "experimental": {
     "todo": true
   },
+  "worktree": {
+    "directory": "{env:OPENCODE_WORKTREES_DIR}"
+  },
   "mcp": {
-    "augment-context-engine": {
-      "enabled": false,
-      "disabled": true
-    },
-    "auggie": {
-      "enabled": false,
-      "disabled": true
-    },
-    "claude-context": {
-      "type": "local",
-      "enabled": true,
-      "command": [
-        "claude-context-mcp"
-      ],
-      "timeout": 120000,
-      "environment": {
-        "OPENAI_API_KEY": "{env:OPENAI_API_KEY}",
-        "MILVUS_ADDRESS": "{env:MILVUS_ADDRESS}",
-        "MILVUS_TOKEN": "{env:MILVUS_TOKEN}",
-        "EMBEDDING_PROVIDER": "{env:EMBEDDING_PROVIDER}"
+    "servers": {
+      "claude-context": {
+        "type": "local",
+        "command": ["claude-context-mcp"],
+        "timeout": { "execution": 120000 },
+        "environment": {
+          "OPENAI_API_KEY": "{env:OPENAI_API_KEY}",
+          "MILVUS_ADDRESS": "{env:MILVUS_ADDRESS}",
+          "MILVUS_TOKEN": "{env:MILVUS_TOKEN}",
+          "EMBEDDING_PROVIDER": "{env:EMBEDDING_PROVIDER}"
+        }
+      },
+      "browse": {
+        "disabled": true
       }
     }
-  }
+  },
+  "plugins": [
+    { "package": "./plugins/localhost-to-docker-host.js" },
+    { "package": "./plugins/rewrite-worktree-gitdirs.js" }
+  ]
 }
