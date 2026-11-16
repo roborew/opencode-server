@@ -68,9 +68,16 @@ Re-run this before any future OpenCode version bump.
    VOL="$(docker inspect "$CID" --format '{{range .Mounts}}{{if eq .Destination "/var/lib/opencode-data"}}{{.Name}}{{end}}{{end}}')"
    test -n "$VOL" || { echo "cannot resolve the opencode-data volume" >&2; exit 1; }
    # Stop the writers first: archiving a live SQLite DB can produce an
-   # inconsistent backup.
-   ./scripts/compose.sh stop opencode
-   docker run --rm -v "$VOL":/data -v "$PWD":/backup alpine tar czf /backup/opencode-data.tgz /data
+   # inconsistent backup. If the stop fails, abort — never archive a live DB.
+   ./scripts/compose.sh stop opencode \
+     || { echo "could not stop opencode — refusing to archive a live database" >&2; exit 1; }
+   # Write the archive OUTSIDE the checkout: the volume holds session data and
+   # MCP auth tokens, and a stray `git add .` must never stage them.
+   BACKUP_DIR="${HOME}/backups/opencode-server"
+   mkdir -p "$BACKUP_DIR"
+   docker run --rm --user "$(id -u):$(id -g)" \
+     -v "$VOL":/data:ro -v "$BACKUP_DIR":/backup \
+     alpine tar czf /backup/opencode-data.tgz /data
    ./scripts/compose.sh start opencode
    ```
 2. **Dockerfile:** replace the install line with a pinned v2 install:

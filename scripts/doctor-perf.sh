@@ -63,16 +63,22 @@ for candidate in "${HOME}/.config/opencode/opencode.jsonc" "${HOME}/.config/open
   fi
 done
 if [[ -n "${HOST_CFG}" ]]; then
-  python3 - "$HOST_CFG" <<'PYCFG'
-import json, re, sys
+  python3 - "$HOST_CFG" "$REPO_ROOT" <<'PYCFG'
+import importlib.util, json, sys
 
-path = sys.argv[1]
-text = open(path, encoding="utf-8").read()
+path, repo_root = sys.argv[1], sys.argv[2]
 try:
-    d = json.loads(text)
-except json.JSONDecodeError:
-    # .jsonc may carry comments — strip line comments before parsing
-    d = json.loads(re.sub(r"^\s*//.*$", "", text, flags=re.M))
+    # Parse with the same JSONC rules the server uses (comments + trailing
+    # commas) by reusing merge-config.py — one source of truth.
+    spec = importlib.util.spec_from_file_location("merge_config", f"{repo_root}/docker/merge-config.py")
+    merge_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(merge_config)
+    text = open(path, encoding="utf-8").read()
+    d = json.loads(merge_config.strip_trailing_commas(merge_config.strip_jsonc(text)))
+except Exception as exc:
+    # An unreadable config must not abort the remaining diagnostics.
+    print(f"(could not parse {path}: {exc})")
+    raise SystemExit(0)
 cc = (d.get("mcp") or {}).get("servers", {}).get("claude-context", {})
 print("disabled =", cc.get("disabled", False))
 print("(keep true while Desktop uses Docker; the server MCP is separate)")
