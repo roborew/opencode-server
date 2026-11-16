@@ -60,7 +60,10 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && chmod +x /usr/local/bin/yq \
     && yq --version
 
-# Node.js 22 (claude-context MCP requires Node >=20, <24)
+# Node.js 24 (claude-context MCP supports Node >=20; upstream documents 20.x/22.x/24.x).
+# Its native deps are NAPI (faiss-node, tree-sitter grammars), so the prebuilt
+# binaries load unchanged on 24 — no source rebuild. 24 also satisfies the
+# config repo's `engines.node >= 24`.
 # Install from official nodejs.org binaries (includes npm) to avoid NodeSource 403s.
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
@@ -68,9 +71,9 @@ RUN ARCH="$(dpkg --print-architecture)" \
     arm64) NODE_ARCH=arm64 ;; \
     *) echo "unsupported dpkg arch for Node.js: $ARCH" >&2; exit 1 ;; \
     esac \
-    && NODE_FILENAME="$(curl -fsSL https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt | grep "linux-${NODE_ARCH}.tar.xz" | awk "NR==1 {print \$2}")" \
+    && NODE_FILENAME="$(curl -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt | grep "linux-${NODE_ARCH}.tar.xz" | awk "NR==1 {print \$2}")" \
     && test -n "$NODE_FILENAME" \
-    && curl -fsSL "https://nodejs.org/dist/latest-v22.x/${NODE_FILENAME}" -o /tmp/node.tar.xz \
+    && curl -fsSL "https://nodejs.org/dist/latest-v24.x/${NODE_FILENAME}" -o /tmp/node.tar.xz \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
     && rm -f /tmp/node.tar.xz \
     && node --version \
