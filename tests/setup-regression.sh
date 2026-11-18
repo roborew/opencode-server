@@ -402,6 +402,86 @@ test_deregistration_refuses_a_non_local_api_host() {
   assert_file_missing "$touched" || return 1
 }
 
+test_local_selection_drops_stale_absolute_registrations() {
+  export SETUP_TEST_NO_MAIN=1
+  # shellcheck source=../scripts/setup.sh
+  source "${REPO_ROOT}/scripts/setup.sh"
+  WORKSPACE_ROOT="/home/robin/01_REPOS/apps"
+  local -a DESIRED_DIRS=()
+  discover_local_git_roots() {
+    printf '%s\n' \
+      "${WORKSPACE_ROOT}/blocshed" \
+      "${WORKSPACE_ROOT}/fatebox" \
+      "${WORKSPACE_ROOT}/rekalled"
+  }
+  list_registered_workspace_projects() {
+    # A default-location project and the malformed canonical path it produced on
+    # the previous run are both stale. Neither appears in the discovered picker.
+    printf '%s\n' \
+      "${WORKSPACE_ROOT}" \
+      "${WORKSPACE_ROOT}home/robin/01_REPOS/apps" \
+      "${WORKSPACE_ROOT}/blocshed" \
+      "${WORKSPACE_ROOT}/fatebox" \
+      "${WORKSPACE_ROOT}/rekalled"
+  }
+
+  # Enter means keep the currently registered projects that are actually in the
+  # picker. It must not feed an unseen absolute path back into path construction.
+  prompt_desired_local_set <<< $'\n' >/dev/null 2>&1 || return 1
+  local actual expected
+  actual="$(printf '%s\n' "${DESIRED_DIRS[@]}")"
+  expected="$(printf '%s\n' \
+    "${WORKSPACE_ROOT}/blocshed" \
+    "${WORKSPACE_ROOT}/fatebox" \
+    "${WORKSPACE_ROOT}/rekalled")"
+  [[ "$actual" == "$expected" ]] || {
+    fail "stale registrations contaminated the desired set"$'\n'"expected: ${expected}"$'\n'"actual: ${actual}"
+    return 1
+  }
+}
+
+
+test_local_desired_paths_reject_absolute_selection_items() {
+  export SETUP_TEST_NO_MAIN=1
+  # shellcheck source=../scripts/setup.sh
+  source "${REPO_ROOT}/scripts/setup.sh"
+  WORKSPACE_ROOT="/home/robin/01_REPOS/apps"
+  local -a DESIRED_DIRS=()
+  discover_local_git_roots() {
+    printf '%s\n' \
+      "${WORKSPACE_ROOT}/blocshed" \
+      "${WORKSPACE_ROOT}/fatebox" \
+      "${WORKSPACE_ROOT}/rekalled"
+  }
+  list_registered_workspace_projects() {
+    printf '%s\n' \
+      "${WORKSPACE_ROOT}/blocshed" \
+      "${WORKSPACE_ROOT}/fatebox" \
+      "${WORKSPACE_ROOT}/rekalled"
+  }
+  # Exercise the path-construction boundary independently of the picker: even
+  # an invalid absolute value must never become APPS_DIR + absolute path.
+  select_items() {
+    SELECTED_ITEMS=(
+      "blocshed"
+      "fatebox"
+      "rekalled"
+      "$WORKSPACE_ROOT"
+    )
+  }
+  prompt_desired_local_set >/dev/null 2>&1 || return 1
+  local actual expected
+  actual="$(printf '%s\n' "${DESIRED_DIRS[@]}")"
+  expected="$(printf '%s\n' \
+    "${WORKSPACE_ROOT}/blocshed" \
+    "${WORKSPACE_ROOT}/fatebox" \
+    "${WORKSPACE_ROOT}/rekalled")"
+  [[ "$actual" == "$expected" ]] || {
+    fail "an absolute selection produced an invalid desired path"$'\n'"expected: ${expected}"$'\n'"actual: ${actual}"
+    return 1
+  }
+}
+
 test_repo_env_defaults_to_skip_without_blocking_setup() {
   # shellcheck source=../scripts/lib/repo-env.sh
   source "${REPO_ROOT}/scripts/lib/repo-env.sh"
@@ -478,6 +558,9 @@ run_test "removal refuses an unreadable project list" test_removal_refuses_an_un
 run_test "removal verification flags an invalid list" test_removal_verification_flags_an_invalid_list
 run_test "deregistration archives the project" test_deregistration_archives_the_project_as_well_as_deleting_sessions
 run_test "deregistration refuses a non-local API host" test_deregistration_refuses_a_non_local_api_host
+run_test "local selection drops stale absolute registrations" test_local_selection_drops_stale_absolute_registrations
+run_test "local desired paths reject absolute selections" test_local_desired_paths_reject_absolute_selection_items
+
 run_test "repo env paste defaults to skip" test_repo_env_defaults_to_skip_without_blocking_setup
 run_test "repo env paste remains available explicitly" test_repo_env_allows_an_explicit_paste
 run_test "repo env paste accepts a CRLF terminator" test_repo_env_paste_accepts_a_crlf_terminator
