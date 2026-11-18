@@ -223,15 +223,16 @@ docker_exec_user() {
   docker exec -u "${uid}:${gid}" "$CONTAINER_NAME" "$@"
 }
 
-# Resolve the remote default branch (origin/HEAD), refreshing the ref once when
-# it is missing. Prints the branch name without the origin/ prefix.
+# Resolve the remote default branch (origin/HEAD). Always refreshes the ref: a
+# cached origin/HEAD survives a remote default change and would point at the old
+# branch. Prints the branch name without the origin/ prefix; empty when the
+# lookup fails (callers must not guess).
 remote_default_branch() {
   local dir="$1" branch
-  branch="$(docker_exec_git "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  if [[ -z "$branch" ]]; then
-    docker_exec_git "$dir" remote set-head origin --auto >/dev/null 2>&1 || true
-    branch="$(docker_exec_git "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if ! docker_exec_git "$dir" remote set-head origin --auto >/dev/null 2>&1; then
+    return 0
   fi
+  branch="$(docker_exec_git "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   echo "${branch#origin/}"
 }
 
@@ -272,11 +273,15 @@ ensure_work_branch() {
 
   current="$(docker_exec_git "$dir" branch --show-current 2>/dev/null || true)"
   if [[ "$fresh_clone" == "1" ]]; then
-    # `checkout -f` is safe here: this runs immediately after a fresh clone, so
-    # there is no local work to discard.
-    if ! docker_exec_git "$dir" checkout -f "$branch" >/dev/null 2>&1; then
-      echo "  warning: cloned repo could not check out ${branch}" >&2
-      return 0
+    # Check out the exact remote-tracking ref we verified, so a same-named tag
+    # cannot be picked instead. `-f` is safe: this runs immediately after a
+    # fresh clone, so there is no local work to discard.
+    if docker_exec_git "$dir" show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
+      docker_exec_git "$dir" checkout -f "$branch" >/dev/null 2>&1 || \
+        { echo "  error: cloned repo could not check out ${branch}" >&2; return 1; }
+    else
+      docker_exec_git "$dir" checkout -f -b "$branch" --track "${remote_ref}" >/dev/null 2>&1 || \
+        { echo "  error: cloned repo could not check out ${branch} from ${remote_ref}" >&2; return 1; }
     fi
     echo "  on ${branch}"
     return 0
@@ -383,7 +388,7 @@ for r in sorted(data, key=lambda x: x['name'].lower()):
   fi
 
   local -a desired=()
-  local name target
+  local name target clone_fail=0
   for name in ${SELECTED_ITEMS[@]+"${SELECTED_ITEMS[@]}"}; do
     target="${WORKSPACE_ROOT}/${name}"
     if [[ "$DRY_RUN" == "1" ]]; then
@@ -396,13 +401,33 @@ for r in sorted(data, key=lambda x: x['name'].lower()):
       ensure_work_branch "$target"
     else
       echo "Cloning ${name}..."
-      clone_github_repo "$GH_ORG" "$name" "$target"
-      ensure_work_branch "$target" 1
+      if ! clone_github_repo "$GH_ORG" "$name" "$target"; then
+        echo "  failed to clone ${name}; not registering it" >&2
+        clone_fail=$((clone_fail + 1))
+        continue
+      fi
+      # An unpopulated clone would be registered as an empty project, so treat a
+      # failed checkout as a failure instead of adding the path to the set.
+      if ! ensure_work_branch "$target" 1; then
+        echo "  failed to check out ${name}; not registering it" >&2
+        clone_fail=$((clone_fail + 1))
+        continue
+      fi
     fi
     desired+=("$target")
   done
 
-  sync_projects ${desired[@]+"${desired[@]}"}
+  if (( clone_fail > 0 )); then
+    echo
+    echo "${clone_fail} repo(s) could not be cloned or checked out; registering the rest." >&2
+  fi
+
+  local sync_rc=0
+  sync_projects ${desired[@]+"${desired[@]}"} || sync_rc=$?
+  if (( clone_fail > 0 && sync_rc == 0 )); then
+    sync_rc=1
+  fi
+  return "$sync_rc"
 }
 
 _path_in_list() {
@@ -424,7 +449,7 @@ sync_projects() {
     [[ -n "$line" ]] && current+=("$line")
   done < <(list_registered_workspace_projects)
 
-  local -a to_add=() to_remove=()
+  local -a to_add=() to_remove=() reseed=()
   local d
   for d in ${desired[@]+"${desired[@]}"}; do
     _path_in_list "$d" ${current[@]+"${current[@]}"} || to_add+=("$d")
@@ -433,7 +458,22 @@ sync_projects() {
     _path_in_list "$d" ${desired[@]+"${desired[@]}"} || to_remove+=("$d")
   done
 
-  local keep_count=$(( ${#desired[@]} - ${#to_add[@]} ))
+  # A project persisted by an earlier run whose seed POST failed (or whose
+  # misplaced seed was cleaned up) is in /api/project but has no session. Re-seed
+  # it instead of leaving it half-registered forever.
+  local session_dirs="" project_list
+  if [[ "$DRY_RUN" != "1" ]] && session_dirs="$(session_directories)"; then
+    project_list="$(printf '%s\n' ${current[@]+"${current[@]}"})"
+    for d in ${desired[@]+"${desired[@]}"}; do
+      _path_in_list "$d" ${current[@]+"${current[@]}"} || continue
+      if ! dir_has_session "$d" "$session_dirs" "$project_list"; then
+        to_add+=("$d")
+        reseed+=("$d")
+      fi
+    done
+  fi
+
+  local keep_count=$(( ${#desired[@]} - ${#to_add[@]} + ${#reseed[@]} ))
   if (( keep_count < 0 )); then keep_count=0; fi
 
   echo
@@ -445,6 +485,9 @@ sync_projects() {
     local x
     for x in "${to_add[@]}"; do echo "    + ${x}"; done
   fi
+  if [[ ${#reseed[@]} -gt 0 ]]; then
+    echo "  re-seed (registered, no session): ${#reseed[@]}"
+  fi
   if [[ ${#to_remove[@]} -gt 0 ]]; then
     local x
     for x in "${to_remove[@]}"; do echo "    - ${x}"; done
@@ -453,7 +496,7 @@ sync_projects() {
   if [[ ${#to_add[@]} -eq 0 && ${#to_remove[@]} -eq 0 ]]; then
     echo "  (no server changes — will still run hosts/session cleanup)"
   elif [[ "$YES" != "1" && "$DRY_RUN" != "1" ]]; then
-    read -r -p "Apply sync? [Y/n] " confirm
+    read -r -p "Apply sync? [Y/n] " confirm || true
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
       echo "Aborted."
       exit 0

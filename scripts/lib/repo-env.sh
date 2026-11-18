@@ -225,9 +225,15 @@ ensure_repos_env() {
   if [[ ${#repos[@]} -eq 0 ]]; then
     return 0
   fi
-  local mode="${OPENCODE_SANDBOX_MODE:-off}"
-  mode="$(echo "$mode" | tr '[:upper:]' '[:lower:]')"
-  if [[ "${OPENCODE_SANDBOX_ENABLED:-0}" != "1" && "$mode" != "on" ]]; then
+  local mode="${OPENCODE_SANDBOX_MODE:-}" enabled="${OPENCODE_SANDBOX_ENABLED:-}"
+  # With --skip-preflight the sandbox settings can live only in the running
+  # container, so consult it before concluding that sandbox checks are off.
+  if [[ -z "$mode" && -z "$enabled" ]] && command -v container_env_get >/dev/null 2>&1; then
+    enabled="$(container_env_get OPENCODE_SANDBOX_ENABLED 2>/dev/null || true)"
+    mode="$(container_env_get OPENCODE_SANDBOX_MODE 2>/dev/null || true)"
+  fi
+  mode="$(echo "${mode:-off}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${enabled:-0}" != "1" && "$mode" != "on" ]]; then
     echo
     echo "Per-repo .env files are not required (sandbox off)."
     return 0
