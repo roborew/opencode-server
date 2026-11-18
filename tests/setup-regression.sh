@@ -109,7 +109,8 @@ test_fresh_clone_populates_the_worktree() {
   : >"$calls"
   # `--no-checkout` leaves HEAD on the remote default with an empty index, so
   # `branch --show-current` already says main and only an explicit checkout
-  # populates the worktree.
+  # populates the worktree. The local branch does not exist yet, so setup must
+  # create it from the verified remote-tracking ref (never a same-named tag).
   docker_exec_git() {
     shift
     printf '%s\n' "$*" >>"$calls"
@@ -118,7 +119,7 @@ test_fresh_clone_populates_the_worktree() {
       "fetch --prune origin") return 0 ;;
       "show-ref --verify --quiet refs/remotes/origin/main") return 0 ;;
       "branch --show-current") echo "main"; return 0 ;;
-      "checkout -f main") return 0 ;;
+      "checkout -f -b main --track refs/remotes/origin/main") return 0 ;;
       "merge --ff-only origin/main") return 0 ;;
       *) return 1 ;;
     esac
@@ -126,7 +127,31 @@ test_fresh_clone_populates_the_worktree() {
   local output
   output="$(ensure_work_branch "/home/robin/apps/example" 1 2>&1)" || return 1
   assert_contains "$output" "on main" || return 1
-  assert_contains "$(cat "$calls")" "checkout -f main" || return 1
+  assert_contains "$(cat "$calls")" "checkout -f -b main --track refs/remotes/origin/main" || return 1
+}
+
+test_fresh_clone_checkout_failure_is_reported() {
+  export SETUP_TEST_NO_MAIN=1
+  # shellcheck source=../scripts/setup.sh
+  source "${REPO_ROOT}/scripts/setup.sh"
+  unset OPENCODE_WORK_BRANCH
+  OPENCODE_UID=1000
+  OPENCODE_GID=1000
+  docker_exec_git() {
+    shift
+    case "$*" in
+      "rev-parse --is-inside-work-tree") return 0 ;;
+      "fetch --prune origin") return 0 ;;
+      "show-ref --verify --quiet refs/remotes/origin/main") return 0 ;;
+      "branch --show-current") echo "main"; return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  # An unpopulated worktree must not be registered as an empty project.
+  if ensure_work_branch "/home/robin/apps/example" 1 >/dev/null 2>&1; then
+    fail "a failed fresh-clone checkout must report failure"
+    return 1
+  fi
 }
 
 test_registration_resolves_location_before_creating_a_session() {
@@ -204,8 +229,49 @@ test_registration_rejects_a_session_created_in_the_parent_directory() {
     return 1
   fi
   assert_contains "$output" "seed session landed in /home/robin/apps instead of ${target}" || return 1
-  # The misplaced session must be deleted, and only that one.
-  assert_contains "$(cat "$deleted_sessions" 2>/dev/null || true)" "/api/session/ses_1" || return 1
+  # Exactly one DELETE, for the misplaced session only.
+  [[ "$(cat "$deleted_sessions" 2>/dev/null || true)" == "/api/session/ses_1" ]] \
+    || fail "expected exactly one DELETE for /api/session/ses_1, got: $(cat "$deleted_sessions" 2>/dev/null || true)"
+}
+
+test_registration_retries_a_missing_seed() {
+  # shellcheck source=../scripts/lib/opencode-api.sh
+  source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
+  WORKSPACE_ROOT="/home/robin/apps"
+  local target="/home/robin/apps/example"
+  local posted="${TMP_ROOT}/seed-posted"
+  rm -f "$posted"
+  # Location resolution persists the project, so an earlier failed seed leaves it
+  # registered without a session. That must be retryable, not reported as skip.
+  list_projects_json() { printf '[{"id":"project-1","canonical":"%s"}]\n' "$target"; }
+  session_directories() { printf '\n'; }
+  api_get() {
+    printf '{"directory":"%s","project":{"id":"project-1","canonical":"%s"}}\n' "$target" "$target"
+  }
+  api_post() {
+    [[ "$1" == "/api/session" ]] || return 1
+    : >"$posted"
+    printf '{"data":{"id":"ses_2","location":{"directory":"%s"}}}\n' "$target"
+  }
+  local output
+  output="$(register_project "$target" "example" 2>&1)" || return 1
+  assert_file_exists "$posted" || return 1
+  assert_contains "$output" "ok" || return 1
+}
+
+test_api_delete_treats_an_absent_session_as_deleted() {
+  # shellcheck source=../scripts/lib/opencode-api.sh
+  source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
+  OPENCODE_SERVER_PASSWORD="test"
+  # A parent session deletion also removes its children, so a follow-up DELETE
+  # gets 404. That must count as deleted; anything else must not.
+  curl() { printf '404'; return 0; }
+  api_delete "/api/session/ses_child" >/dev/null 2>&1 || { fail "404 should count as deleted"; return 1; }
+  curl() { printf '500'; return 0; }
+  if api_delete "/api/session/ses_child" >/dev/null 2>&1; then
+    fail "500 should not count as deleted"
+    return 1
+  fi
 }
 
 test_archive_marks_only_the_selected_project_in_sqlite() {
@@ -215,6 +281,10 @@ test_archive_marks_only_the_selected_project_in_sqlite() {
   local db_dir="${TMP_ROOT}/archive-db"
   mkdir -p "${db_dir}/opencode"
   CONTAINER_XDG_DATA_HOME="$db_dir"
+  # Pin a local API target so the archive guard allows the test even when the
+  # invoking shell exports a remote OPENCODE_HOST.
+  OPENCODE_HOST="http://127.0.0.1:4097"
+  OPENCODE_PUBLISH_PORT=4097
   python3 -c '
 import sqlite3, sys
 con = sqlite3.connect(sys.argv[1])
@@ -240,6 +310,8 @@ test_deregistration_archives_the_project_as_well_as_deleting_sessions() {
   local deleted="${TMP_ROOT}/sessions-deleted"
   local archived="${TMP_ROOT}/project-archived"
   rm -f "$deleted" "$archived"
+  OPENCODE_HOST="http://127.0.0.1:4097"
+  OPENCODE_PUBLISH_PORT=4097
   list_sessions_for_directory() {
     printf '[{"id":"ses_1","location":{"directory":"%s"}}]\n' "$1"
   }
@@ -249,15 +321,19 @@ test_deregistration_archives_the_project_as_well_as_deleting_sessions() {
   }
   # Archival must only happen after the expected session was deleted.
   archive_project() {
-    if [[ "$(cat "$deleted" 2>/dev/null || true)" != *"/api/session/ses_1"* ]]; then
-      echo "archive ran before the session was deleted" >&2
+    if [[ "$(cat "$deleted" 2>/dev/null || true)" != "/api/session/ses_1" ]]; then
+      echo "archive ran before the expected session was deleted" >&2
       return 1
     fi
     : >"$archived"
   }
-  list_projects_json() { echo '[]'; }
+  # Post-archive verification must see a readable project list without the
+  # removed project.
+  api_get() { echo '[]'; }
   deregister_project "/home/robin/apps/example" >/dev/null || return 1
   assert_file_exists "$archived" || return 1
+  [[ "$(cat "$deleted")" == "/api/session/ses_1" ]] \
+    || fail "expected exactly one DELETE for /api/session/ses_1, got: $(cat "$deleted")"
 }
 
 test_deregistration_refuses_a_non_local_api_host() {
@@ -318,11 +394,12 @@ test_repo_env_paste_accepts_a_crlf_terminator() {
   source "${REPO_ROOT}/scripts/lib/repo-env.sh"
   local target="${TMP_ROOT}/env-paste-crlf"
   rm -f "$target"
-  printf 'EXAMPLE_KEY=value\r\n.\r\n' | read_env_paste_to_file "$target" >/dev/null || return 1
+  printf 'EXAMPLE_KEY=value\r\n.\r\nSENTINEL_KEY=leak\r\n' | read_env_paste_to_file "$target" >/dev/null || return 1
   assert_file_exists "$target" || return 1
   local content
   content="$(cat "$target")"
   assert_contains "$content" "EXAMPLE_KEY=value" || return 1
+  assert_not_contains "$content" "SENTINEL_KEY" || return 1
   [[ "$content" != *"."* ]] || { fail "terminator was written into ${target}"; return 1; }
 }
 
@@ -346,9 +423,12 @@ test_repo_env_is_not_requested_when_sandbox_is_off() {
 
 run_test "main is the default work branch" test_main_is_the_default_work_branch
 run_test "fresh clone populates the worktree" test_fresh_clone_populates_the_worktree
+run_test "fresh clone checkout failure is reported" test_fresh_clone_checkout_failure_is_reported
 run_test "GitHub clones use the remote default branch" test_github_clone_uses_the_remote_default_branch
 run_test "registration resolves the v2 location first" test_registration_resolves_location_before_creating_a_session
 run_test "registration rejects parent-directory sessions" test_registration_rejects_a_session_created_in_the_parent_directory
+run_test "registration retries a missing seed" test_registration_retries_a_missing_seed
+run_test "session delete treats 404 as deleted" test_api_delete_treats_an_absent_session_as_deleted
 run_test "archive updates only the selected SQLite project" test_archive_marks_only_the_selected_project_in_sqlite
 run_test "deregistration archives the project" test_deregistration_archives_the_project_as_well_as_deleting_sessions
 run_test "deregistration refuses a non-local API host" test_deregistration_refuses_a_non_local_api_host
