@@ -15,7 +15,7 @@ After `docker compose up`, run [`scripts/setup.sh`](../scripts/setup.sh). It nev
 ./scripts/setup.sh projects local     # amend set from mounted OPENCODE_APPS_DIR
 ./scripts/setup.sh projects github    # clone GH_ORG repos, then amend set
 ./scripts/setup.sh projects local --all --yes --skip-preflight
-./scripts/setup.sh bootstrap --yes    # hosts + session cleanup only
+./scripts/setup.sh bootstrap --yes    # hosts entry + deep links only
 ```
 
 Re-run anytime to add/remove projects; Enter keeps the current set. `--all` makes the desired set every discovered repo.
