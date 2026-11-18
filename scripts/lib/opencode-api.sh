@@ -158,32 +158,102 @@ opencode_base_url() {
   echo "${host%/}"
 }
 
+# Run a command in the background and kill it after N seconds. Portable: needs
+# no coreutils `timeout`, which is absent on stock macOS. The job gets its own
+# process group so children (docker, sleep) die with it — otherwise a surviving
+# child keeps the caller's capture pipe open and the timeout blocks anyway.
+_run_bounded() {
+  local seconds="$1"
+  shift
+  local job_control=0
+  case $- in *m*) ;; *)
+    set -m
+    job_control=1
+    ;;
+  esac
+  "$@" &
+  local pid=$!
+  local ticks=0
+  local limit=$((seconds * 10))
+  while kill -0 "$pid" 2>/dev/null; do
+    if (( ticks >= limit )); then
+      kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      sleep 0.2
+      kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      (( job_control )) && set +m
+      return 124
+    fi
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  wait "$pid"
+  local rc=$?
+  (( job_control )) && set +m
+  return "$rc"
+}
+
+# Resolve the API password from the running container once, under a wall-clock
+# limit. Docker calls have no timeout of their own, so the first request on a
+# cold host must not be the call that decides. `container_env_get` is used (not
+# `docker exec printenv`) because Infisical injects the password into PID 1's
+# environment, which only that helper can read. Sets
+# OPENCODE_API_CREDENTIALS_RESOLVED=1 either way: a failed lookup means "probe
+# without credentials", not "retry Docker on every request".
+api_resolve_credentials() {
+  local limit="${1:-5}"
+  if [[ "${OPENCODE_API_CREDENTIALS_RESOLVED:-0}" == "1" ]]; then
+    return 0
+  fi
+  OPENCODE_API_CREDENTIALS_RESOLVED=1
+  export OPENCODE_API_CREDENTIALS_RESOLVED
+  local pass="${OPENCODE_SERVER_PASSWORD:-}"
+  if [[ -n "$pass" && "$pass" != "change-me" ]]; then
+    return 0
+  fi
+  local password
+  password="$(_run_bounded "$limit" container_env_get OPENCODE_SERVER_PASSWORD 2>/dev/null)" || password=""
+  if [[ -n "$password" ]]; then
+    OPENCODE_SERVER_PASSWORD="$password"
+    export OPENCODE_SERVER_PASSWORD
+  fi
+  return 0
+}
+
 opencode_auth() {
   # OpenCode v2 hardcodes the basic-auth username to "opencode"
   # (OPENCODE_SERVER_USERNAME is unsupported); only the password is
   # configurable.
   local pass="${OPENCODE_SERVER_PASSWORD:-}"
   # Host .env often has Infisical bootstrap only — pull runtime auth from the
-  # running container (.env compose injection or Infisical) when needed.
-  if container_running; then
-    if [[ -z "$pass" || "$pass" == "change-me" ]]; then
-      pass="$(container_env_get OPENCODE_SERVER_PASSWORD)"
-    fi
+  # running container (.env compose injection or Infisical) when needed, but
+  # only once and only under a timeout.
+  if [[ -z "$pass" || "$pass" == "change-me" ]]; then
+    api_resolve_credentials
+    pass="${OPENCODE_SERVER_PASSWORD:-}"
   fi
   echo "opencode:${pass}"
 }
 
 api_get() {
   local path="$1"
+  local timeout="${2:-}"
   local base
+  local -a limits=(--connect-timeout 2)
+  if [[ -n "$timeout" ]]; then
+    limits+=(--max-time "$timeout")
+  fi
   base="$(opencode_base_url)"
-  curl -sf -u "$(opencode_auth)" "${base}${path}"
+  curl -sf -u "$(opencode_auth)" "${limits[@]}" "${base}${path}"
 }
 
 api_post() {
   local path="$1"
-  local body="${2:-{}}"
+  local body="${2:-}"
   local extra_header="${3:-}"
+  if [[ -z "$body" ]]; then
+    body='{}'
+  fi
   local base
   base="$(opencode_base_url)"
   if [[ -n "$extra_header" ]]; then
@@ -201,18 +271,25 @@ api_post() {
 }
 
 api_delete() {
+  # Returns 0 when the resource is gone: 2xx and 404 both mean "absent now",
+  # so a parent-then-child session deletion is not counted as a failure.
   local path="$1"
   local extra_header="${2:-}"
-  local base
-  base="$(opencode_base_url)"
+  local base code
+  local -a header_args=()
   if [[ -n "$extra_header" ]]; then
-    curl -sf -u "$(opencode_auth)" \
-      -H "$extra_header" \
-      -X DELETE "${base}${path}"
-  else
-    curl -sf -u "$(opencode_auth)" \
-      -X DELETE "${base}${path}"
+    header_args=(-H "$extra_header")
   fi
+  base="$(opencode_base_url)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' \
+    -u "$(opencode_auth)" \
+    ${header_args[@]+"${header_args[@]}"} \
+    --connect-timeout 2 --max-time 15 \
+    -X DELETE "${base}${path}" 2>/dev/null || true)"
+  case "${code:-000}" in
+    2*|404) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 api_patch() {
@@ -372,6 +449,52 @@ list_projects_json() {
   api_get "/api/project" 2>/dev/null || echo '[]'
 }
 
+# Strict project list: fails when the request fails or the payload is not a JSON
+# array. Never substitute [] — callers use this when "no projects" would be a
+# destructive conclusion.
+list_projects_json_strict() {
+  local raw
+  if ! raw="$(api_get "/api/project" 15 2>/dev/null)"; then
+    return 1
+  fi
+  printf '%s' "$raw" | python3 -c '
+import json, sys
+if not isinstance(json.load(sys.stdin), list):
+    sys.exit(1)
+' || return 1
+  printf '%s' "$raw"
+}
+
+# Echo "present", "absent" or "invalid" for a project path. Uses a strict
+# request so a failed GET can never be mistaken for absence.
+project_presence() {
+  local dir="$1" raw
+  if ! raw="$(list_projects_json_strict)"; then
+    echo "invalid"
+    return 0
+  fi
+  printf '%s' "$raw" | python3 -c '
+import json, sys
+target = sys.argv[1].rstrip("/")
+for p in json.load(sys.stdin):
+    wt = (p.get("canonical") or p.get("worktree") or p.get("directory") or "").rstrip("/")
+    if wt == target:
+        print("present")
+        sys.exit(0)
+print("absent")
+' "$dir" || echo "invalid"
+}
+
+# Resolve a directory through v2's location API. Besides validating the path,
+# this persists (and, if necessary, unarchives) its owning project before we
+# create the seed session used by clients. Bounded: a server that accepts the
+# connection but never answers must not block the whole project sync.
+resolve_project_location() {
+  local dir="$1" encoded
+  encoded="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1].rstrip("/"), safe=""))' "$dir")"
+  api_get "/api/location?location%5Bdirectory%5D=${encoded}" 15
+}
+
 project_registered() {
   local dir="$1"
   local host projects
@@ -389,17 +512,190 @@ sys.exit(1)
 " "$host" "$projects"
 }
 
+# Every session directory on the server (deduped, one API listing).
+# Returns nonzero when the session list cannot be fetched.
+session_directories() {
+  local all
+  if ! all="$(list_sessions_json)"; then
+    return 1
+  fi
+  # Read the JSON on stdin: session lists can exceed the OS argument limit.
+  printf '%s' "$all" | python3 -c '
+import json, sys
+seen = set()
+for s in json.load(sys.stdin) or []:
+    d = ((s.get("location") or {}).get("directory") or s.get("directory") or "").rstrip("/")
+    if d:
+        seen.add(d)
+for d in sorted(seen):
+    print(d)
+'
+}
+
+# Print "yes"/"no": does $dir (or a directory below it) have a session?
+# Session directories are read from stdin (they can exceed the argument limit),
+# and only projects strictly *below* the target exclude a directory — a
+# registered parent must not claim its child project's own sessions.
+# $2 = newline-separated project paths. Empty output means the check failed.
+dir_has_session() {
+  local dir="$1" projects="${2:-}"
+  python3 -c '
+import sys
+target = sys.argv[1].rstrip("/")
+projects = {p.rstrip("/") for p in sys.argv[2].splitlines() if p.strip()}
+nested = {p for p in projects if p != target and p.startswith(target + "/")}
+hit = False
+for d in sys.stdin.read().splitlines():
+    d = d.strip().rstrip("/")
+    if not d or (d != target and not d.startswith(target + "/")):
+        continue
+    if any(d == p or d.startswith(p + "/") for p in nested):
+        continue
+    hit = True
+    break
+print("yes" if hit else "no")
+' "$dir" "$projects"
+}
+
+
+# Registration is complete only when the project exists *and* a session lives
+# in it. Location resolution alone persists the project, so a failed or
+# cleaned-up seed would otherwise be skipped forever on the next run.
+_seed_session_present() {
+  local dir="$1" sessions projects answer
+  if ! sessions="$(session_directories)"; then
+    return 2
+  fi
+  projects="$(list_projects_json | python3 -c '
+import json, sys
+for p in json.loads(sys.stdin.read() or "[]"):
+    wt = (p.get("canonical") or p.get("worktree") or p.get("directory") or "").rstrip("/")
+    if wt:
+        print(wt)
+')"
+  answer="$(printf '%s\n' "$sessions" | dir_has_session "$dir" "$projects")" || return 2
+  case "$answer" in
+    yes) return 0 ;;
+    no) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+# Verify a registration by project id when the server supplies one. Two local
+# clones of the same origin share a single project whose canonical path is the
+# first clone, so a path-only lookup would miss the second clone.
+verify_registered_project() {
+  local dir="$1" id="${2:-}"
+  list_projects_json | python3 -c '
+import json, sys
+target = sys.argv[1].rstrip("/")
+pid = sys.argv[2]
+for p in json.loads(sys.stdin.read() or "[]"):
+    if pid:
+        # The server told us which project this location belongs to; only that
+        # id counts, so a concurrent replacement at the same path cannot pass.
+        if p.get("id") == pid:
+            sys.exit(0)
+        continue
+    wt = (p.get("canonical") or p.get("worktree") or p.get("directory") or "").rstrip("/")
+    if wt == target:
+        sys.exit(0)
+sys.exit(1)
+' "$dir" "$id"
+}
+
 register_project() {
   local dir="$1"
   local title="${2:-$(basename "$dir")}"
   dir="$(to_host_workspace_path "$dir")"
+
   if project_registered "$dir"; then
-    echo "skip"
-    return 0
+    local seed_state
+    if _seed_session_present "$dir"; then
+      echo "skip"
+      return 0
+    else
+      seed_state=$?
+    fi
+    if (( seed_state == 2 )); then
+      echo "could not list sessions for ${dir}; leaving it registered — re-run to retry the seed" >&2
+      echo "skip"
+      return 0
+    fi
+    echo "project ${dir} is registered but has no session — creating the seed" >&2
   fi
+
+  local resolved response actual resolved_id="" resolved_canonical=""
+  if ! resolved="$(resolve_project_location "$dir")"; then
+    echo "could not resolve project location ${dir}" >&2
+    return 1
+  fi
+  # <directory> TAB <project id> TAB <project canonical path>. The project
+  # fields are optional (older responses omit them).
+  if ! IFS=$'\t' read -r actual resolved_id resolved_canonical <<< "$(python3 -c '
+import json, sys
+value = json.loads(sys.argv[1])
+project = value.get("project") or {}
+print("\t".join([
+    value.get("directory") or "",
+    project.get("id") or "",
+    (project.get("canonical") or project.get("worktree") or "").rstrip("/"),
+]))
+' "$resolved")"; then
+    echo "invalid location response for ${dir}" >&2
+    return 1
+  fi
+  if [[ "$actual" != "$dir" ]]; then
+    echo "location API resolved ${dir} to unexpected directory ${actual:-<invalid response>}" >&2
+    return 1
+  fi
+  if [[ -n "$resolved_id" && -n "$resolved_canonical" && "$resolved_canonical" != "$dir" ]]; then
+    echo "location for ${dir} belongs to project ${resolved_id}, already registered at ${resolved_canonical}" >&2
+    echo "  OpenCode keeps one project per repository origin — register one clone per origin, or deregister ${resolved_canonical} first" >&2
+    return 1
+  fi
+
   local body
   body="$(python3 -c 'import json,sys; print(json.dumps({"title": sys.argv[1], "location": {"directory": sys.argv[2]}}))' "$title" "$dir")"
-  api_post "/api/session" "$body" >/dev/null
+  if ! response="$(api_post "/api/session" "$body")"; then
+    echo "could not create seed session in ${dir}" >&2
+    return 1
+  fi
+  if ! actual="$(python3 -c '
+import json, sys
+value = json.loads(sys.argv[1])
+session = value.get("data") or value
+print((session.get("location") or {}).get("directory") or "")
+' "$response")"; then
+    echo "invalid create-session response for ${dir}" >&2
+    return 1
+  fi
+  if [[ "$actual" != "$dir" ]]; then
+    echo "seed session landed in ${actual:-<unknown>} instead of ${dir}" >&2
+    # Delete only the session this attempt created; the caller may retry, and a
+    # stray session in the parent directory would otherwise linger forever.
+    local session_id
+    session_id="$(python3 -c '
+import json, sys
+value = json.loads(sys.argv[1])
+session = value.get("data") or value
+print(session.get("id") or "")
+' "$response" 2>/dev/null || true)"
+    if [[ -z "$session_id" ]]; then
+      echo "create-session response had no id; the misplaced session was left in place" >&2
+      return 1
+    fi
+    if api_delete "/api/session/${session_id}" >/dev/null 2>&1; then
+      echo "removed the misplaced seed session ${session_id}" >&2
+    else
+      echo "could not remove misplaced seed session ${session_id}; it remains on the server" >&2
+    fi
+    return 1
+  fi
+  if ! verify_registered_project "$dir" "$resolved_id"; then
+    echo "project ${dir} is still absent from /api/project after registration" >&2
+    return 1
+  fi
   echo "ok"
 }
 
@@ -473,35 +769,124 @@ assign_missing_project_colors() {
   normalize_registered_projects "$@"
 }
 
-# List sessions whose directory matches the worktree.
-# v2 Session.directory lives at location.directory (nested); filter
+# List sessions belonging to the worktree: the directory itself plus any
+# session started in a subdirectory. Sessions inside a nested repository that is
+# its own registered project stay out — archiving this project must not delete
+# them. v2 Session.directory lives at location.directory (nested); filter
 # client-side (v1's X-Opencode-Directory header is gone).
 list_sessions_for_directory() {
   local dir="$1"
-  local all
+  local all projects
   if ! all="$(list_sessions_json)"; then
     return 1
   fi
-  python3 -c "
+  # Strict: without the real project list we cannot tell a nested project's
+  # sessions from this project's, and deleting the former is irreversible.
+  if ! projects="$(list_projects_json_strict)"; then
+    echo "could not read /api/project; refusing to select sessions for ${dir}" >&2
+    return 1
+  fi
+  # Session lists are piped on stdin: they can exceed the argument limit.
+  printf '%s' "$all" | python3 -c "
 import json, sys
-dir_ = sys.argv[1]
-data = json.loads(sys.argv[2] or '[]')
+target = sys.argv[1].rstrip('/')
+projects = set()
+for p in json.loads(sys.argv[2] or '[]'):
+    wt = (p.get('canonical') or p.get('worktree') or p.get('directory') or '').rstrip('/')
+    if wt:
+        projects.add(wt)
+nested = {p for p in projects if p != target and p.startswith(target + '/')}
 out = []
-for s in data:
-    d = (s.get('location') or {}).get('directory') or s.get('directory') or ''
-    if d == dir_ or d.rstrip('/') == dir_.rstrip('/'):
-        out.append(s)
+for s in json.load(sys.stdin) or []:
+    d = ((s.get('location') or {}).get('directory') or s.get('directory') or '').rstrip('/')
+    if d != target and not d.startswith(target + '/'):
+        continue
+    if any(d == p or d.startswith(p + '/') for p in nested):
+        continue
+    out.append(s)
 print(json.dumps(out))
-" "$dir" "$all"
+" "$dir" "$projects"
 }
 
-# Remove all sessions for a worktree so it drops out of the active UI set.
-# (OpenCode has no project.delete; sessions are the registration mechanism.)
+# v2 has no project.delete or project.archive endpoint. Archive removed
+# projects in the same on-volume DB used by Project.sweep; /api/project omits
+# archived rows immediately, and resolving the location later unarchives them.
+#
+# Session deletes go through OPENCODE_HOST while the archive below writes SQLite
+# in the local container. Refuse when those are not the same instance, otherwise
+# `--host` could delete sessions on one server and archive a project on another.
+require_same_server_for_archive() {
+  local base publish_port host port
+  base="$(opencode_base_url)"
+  publish_port="${OPENCODE_PUBLISH_PORT:-4097}"
+  publish_port="${publish_port##*:}"
+  host="${base#*://}"
+  host="${host%%/*}"
+  port=""
+  if [[ "$host" == \[*\]* ]]; then
+    # Bracketed IPv6: [::1]:4097
+    port="${host#*\]}"
+    host="${host%%\]*}"
+    host="${host#\[}"
+    port="${port#:}"
+  elif [[ "$host" == *:* ]]; then
+    port="${host##*:}"
+    host="${host%:*}"
+  fi
+  case "$host" in
+    127.0.0.1 | localhost | ::1 | 0.0.0.0) ;;
+    *)
+      echo "refusing to delete sessions or archive projects: API target ${base} is not the local container (${CONTAINER_NAME}) — archive_project would edit a different server's database" >&2
+      return 1
+      ;;
+  esac
+  # An explicit host without a port falls back to :80, never the publish port.
+  if [[ "$port" != "$publish_port" ]]; then
+    echo "refusing to delete sessions or archive projects: API target ${base} does not use the local publish port ${publish_port} — archive_project would edit a different server's database" >&2
+    return 1
+  fi
+  return 0
+}
+
+archive_project() {
+  local dir="$1"
+  local path
+  path="$(to_host_workspace_path "$dir")"
+  if ! require_same_server_for_archive; then
+    return 1
+  fi
+  docker_exec python3 -c '
+import sqlite3, sys, time
+
+db_path, directory = sys.argv[1], sys.argv[2].rstrip("/")
+con = sqlite3.connect(db_path, timeout=10)
+con.execute("PRAGMA busy_timeout=10000")
+# One statement so a concurrent worktree change cannot archive a row that has
+# since moved to a different path.
+now = time.time_ns() // 1_000_000
+archived = con.execute(
+    "UPDATE project SET time_archived = ? WHERE worktree = ?", (now, directory)
+).rowcount
+con.commit()
+con.close()
+print(f"archived {archived} project(s)")
+' "${CONTAINER_XDG_DATA_HOME}/opencode/opencode.db" "$path"
+}
+
+# Delete sessions for a deselected worktree and archive its project. OpenCode
+# persists projects independently of sessions, so deleting sessions alone does
+# not remove the project from clients.
 deregister_project() {
   local dir="$1"
   local path
   path="$(to_host_workspace_path "$dir")"
   local ok=0 fail=0
+
+  # Check before any session is deleted: the archive below only works on the
+  # local container's DB, so a non-local --host must not be deregistered.
+  if ! require_same_server_for_archive; then
+    return 1
+  fi
 
   local sessions ids
   if ! sessions="$(list_sessions_for_directory "$path")"; then
@@ -534,7 +919,25 @@ for s in json.loads(sys.argv[1] or '[]'):
     echo "fail"
     return 1
   fi
-  echo "ok"
+  if ! archive_project "$path"; then
+    echo "fail"
+    return 1
+  fi
+  # The archive writes SQLite directly, so a server that keeps serving its own
+  # project list would otherwise be reported as a successful removal.
+  case "$(project_presence "$path")" in
+    absent)
+      echo "ok"
+      ;;
+    present)
+      echo "archived ${path} in the local database but the server still lists it — verify ${CONTAINER_NAME} uses that database, then re-run" >&2
+      return 1
+      ;;
+    *)
+      echo "archived ${path} in the local database, but the project list could not be read — removal is unverified" >&2
+      return 1
+      ;;
+  esac
 }
 
 list_registered_workspace_projects() {

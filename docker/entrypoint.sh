@@ -8,10 +8,34 @@ OPENCODE_GID="${OPENCODE_GID:-1000}"
 
 # --- root phase: fix ownership, then re-exec as the runtime user -------------
 if [[ "$(id -u)" -eq 0 ]]; then
+  # `chown -R` on overlayfs copies every file up into the container layer, even
+  # when the owner is already correct. /home/opencode is ~860 MB / 26k files, so
+  # an unconditional recursion stalled startup on ext4 journal commits for
+  # minutes per container creation. The image already bakes the right owner in
+  # (`chown -R opencode:opencode /home/opencode` in the Dockerfile), so only
+  # recurse when a mismatch actually exists.
+  tree_needs_chown() {
+    local path="$1" output
+    [[ -e "$path" ]] || return 1
+    if ! output="$(
+      find "$path" \( ! -user "${OPENCODE_UID}" -o ! -group "${OPENCODE_GID}" \) \
+        -print -quit 2>/dev/null
+    )"; then
+      # A failed scan is not proof that ownership is correct. Preserve the
+      # repair attempt rather than dropping privileges on an unreadable tree.
+      echo "opencode-entrypoint: ownership scan failed for ${path}; attempting repair" >&2
+      return 0
+    fi
+    [[ -n "$output" ]]
+  }
+
   fix_as_root() {
     local path="$1"
     mkdir -p "$path" 2>/dev/null || true
     [[ -e "$path" ]] || return 0
+    if ! tree_needs_chown "$path"; then
+      return 0
+    fi
     chown -R "${OPENCODE_UID}:${OPENCODE_GID}" "$path" 2>/dev/null || true
   }
   # Named volume only — safe to recurse.

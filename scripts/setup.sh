@@ -24,8 +24,8 @@ Commands:
   (default)           Configure sandbox mode, preflight, then amend projects + bootstrap
   preflight           Run preflight checks only (includes sandbox configure)
   sandbox             Probe/configure Sysbox sandbox mode only (OPENCODE_SANDBOX_MODE)
-  projects local      Amend local OPENCODE_APPS_DIR set; ensure work branch checkout
-  projects github     List GH_ORG repos, clone chosen ones onto work branch, amend set
+  projects local      Amend local OPENCODE_APPS_DIR set; ensure main checkout
+  projects github     List GH_ORG repos, clone chosen ones, ensure main, amend set
   bootstrap           Hosts entry + print open links
 
 Options:
@@ -40,12 +40,12 @@ Options:
   --skip-bootstrap    Skip hosts/deep-links after sync
   -h, --help          Show this help
 
-Local and github modes ensure OPENCODE_WORK_BRANCH (default: develop)
+Local and github modes ensure OPENCODE_WORK_BRANCH (default: main)
 when that remote branch exists (fetch + checkout; no force-reset).
 
 Each projects run (unless --skip-bootstrap):
   1) You choose the desired project set (re-run amends: add/remove)
-  2) Registers missing repos; deregisters removed ones (deletes their sessions)
+  2) Registers missing repos; archives removed ones and deletes their sessions
   3) /etc/hosts → OPENCODE_FQDN (sudo) so the Docker host can use the FQDN
   4) Prints web deep links for each host-path project
      (does not touch OpenCode.app — attach that client later yourself)
@@ -73,6 +73,9 @@ COMMAND=""
 PROJECT_MODE=""
 AUTO_HOSTS_PREFLIGHT="${AUTO_HOSTS_PREFLIGHT:-1}"
 PREFLIGHT_HOSTS_PREPARED=0
+# Optional: the selected project set when it differs from the paths ready to
+# register (GitHub mode with a failed clone). Removals use this set.
+SYNC_SELECTED_DIRS=()
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -178,7 +181,7 @@ run_projects_local() {
   fi
   load_env || true
 
-  local work_branch="${OPENCODE_WORK_BRANCH:-develop}"
+  local work_branch="${OPENCODE_WORK_BRANCH:-main}"
 
   echo
   echo "Discovering git repos under ${WORKSPACE_ROOT}..."
@@ -200,8 +203,6 @@ run_projects_local() {
   sync_projects ${DESIRED_DIRS[@]+"${DESIRED_DIRS[@]}"}
 }
 
-# After clone/fetch: land on OPENCODE_WORK_BRANCH (default develop) when origin has it.
-# Does not force-reset local work; warns and leaves the current branch if checkout fails.
 # Run as OPENCODE_UID — host binds must be owned by that user (same as serve).
 docker_exec_git() {
   local dir="$1"
@@ -225,41 +226,106 @@ docker_exec_user() {
   docker exec -u "${uid}:${gid}" "$CONTAINER_NAME" "$@"
 }
 
+# Resolve the remote default branch (origin/HEAD). Always refreshes the ref: a
+# cached origin/HEAD survives a remote default change and would point at the old
+# branch. Prints the branch name without the origin/ prefix; empty when the
+# lookup fails (callers must not guess).
+remote_default_branch() {
+  local dir="$1" branch
+  if ! docker_exec_git "$dir" remote set-head origin --auto >/dev/null 2>&1; then
+    return 0
+  fi
+  branch="$(docker_exec_git "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  echo "${branch#origin/}"
+}
+
+# After clone/fetch: land on OPENCODE_WORK_BRANCH (default main) when origin has
+# it. Trunk-based repos only carry the default branch, so when the configured
+# branch is absent we fall back to the remote default (origin/HEAD) instead of
+# warning. Pass `1` as the second arg after a `--no-checkout` clone: HEAD there is
+# already on the remote default but the index is empty, so the name check alone
+# would skip the checkout that populates the worktree.
+# Does not force-reset local work; leaves an existing unrelated branch alone.
 ensure_work_branch() {
   local dir="$1"
-  local branch="${OPENCODE_WORK_BRANCH:-develop}"
+  local fresh_clone="${2:-0}"
+  local branch="${OPENCODE_WORK_BRANCH:-main}"
   local current remote_ref="refs/remotes/origin/${branch}"
+  local using_fallback=0
 
   if ! docker_exec_git "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "  warning: cannot access repo as ${OPENCODE_UID}:${OPENCODE_GID} (ownership/permissions mismatch) — left unchanged" >&2
+    # A fresh clone with no usable checkout must not be registered.
+    [[ "$fresh_clone" == "1" ]] && return 1
     return 0
   fi
 
   docker_exec_git "$dir" fetch --prune origin >/dev/null 2>&1 || true
 
   if ! docker_exec_git "$dir" show-ref --verify --quiet "$remote_ref" 2>/dev/null; then
-    current="$(docker_exec_git "$dir" branch --show-current 2>/dev/null || echo '?')"
-    echo "  warning: origin/${branch} missing — left on ${current}" >&2
-    return 0
+    local fallback
+    fallback="$(remote_default_branch "$dir")"
+    if [[ -n "$fallback" ]] && docker_exec_git "$dir" show-ref --verify --quiet "refs/remotes/origin/${fallback}" 2>/dev/null; then
+      branch="$fallback"
+      remote_ref="refs/remotes/origin/${branch}"
+      using_fallback=1
+    else
+      current="$(docker_exec_git "$dir" branch --show-current 2>/dev/null || true)"
+      echo "  no origin/${OPENCODE_WORK_BRANCH:-main} remote branch — left on ${current:-<no branch>}"
+      # Without any branch to check out, a fresh clone is still empty.
+      [[ "$fresh_clone" == "1" ]] && return 1
+      return 0
+    fi
   fi
 
   current="$(docker_exec_git "$dir" branch --show-current 2>/dev/null || true)"
-  if [[ "$current" != "$branch" ]]; then
+  if [[ "$fresh_clone" == "1" ]]; then
+    # Check out the exact remote-tracking ref we verified, so a same-named tag
+    # cannot be picked instead. `-f` is safe: this runs immediately after a
+    # fresh clone, so there is no local work to discard.
     if docker_exec_git "$dir" show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
-      if ! docker_exec_git "$dir" checkout "$branch" >/dev/null 2>&1; then
-        echo "  warning: could not checkout ${branch} (local changes?) — left on ${current:-?}" >&2
-        return 0
-      fi
+      docker_exec_git "$dir" checkout -f "$branch" >/dev/null 2>&1 || \
+        { echo "  error: cloned repo could not check out ${branch}" >&2; return 1; }
     else
-      if ! docker_exec_git "$dir" checkout -b "$branch" --track "origin/${branch}" >/dev/null 2>&1; then
-        echo "  warning: could not create local ${branch} from origin/${branch}" >&2
-        return 0
-      fi
+      docker_exec_git "$dir" checkout -f -b "$branch" --track "${remote_ref}" >/dev/null 2>&1 || \
+        { echo "  error: cloned repo could not check out ${branch} from ${remote_ref}" >&2; return 1; }
+    fi
+    echo "  on ${branch}"
+    return 0
+  fi
+  if [[ "$current" == "$branch" ]]; then
+    docker_exec_git "$dir" merge --ff-only "origin/${branch}" >/dev/null 2>&1 || true
+    echo "  on ${branch}"
+    return 0
+  fi
+  # An existing unrelated branch is never moved when we fell back to the remote
+  # default, so work-in-progress branches survive a trunk-only remote.
+  if (( using_fallback )) && [[ -n "$current" ]]; then
+    echo "  on ${current} (no origin/${OPENCODE_WORK_BRANCH:-main} remote branch)"
+    return 0
+  fi
+  if docker_exec_git "$dir" show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
+    if ! docker_exec_git "$dir" checkout "$branch" >/dev/null 2>&1; then
+      echo "  warning: could not checkout ${branch} (local changes?) — left on ${current:-<no branch>}" >&2
+      return 0
+    fi
+  else
+    if ! docker_exec_git "$dir" checkout -b "$branch" --track "origin/${branch}" >/dev/null 2>&1; then
+      echo "  warning: could not create local ${branch} from origin/${branch}" >&2
+      return 0
     fi
   fi
 
   docker_exec_git "$dir" merge --ff-only "origin/${branch}" >/dev/null 2>&1 || true
   echo "  on ${branch}"
+}
+
+# Clone without a checkout so a failing checkout filter on the remote default
+# branch cannot abort the clone; ensure_work_branch then lands on the configured
+# branch when it exists, or on the remote default otherwise.
+clone_github_repo() {
+  local org="$1" name="$2" target="$3"
+  docker_exec_user gh repo clone "${org}/${name}" "$target" -- --no-checkout
 }
 
 run_projects_github() {
@@ -286,7 +352,7 @@ run_projects_github() {
     exit 1
   fi
 
-  local work_branch="${OPENCODE_WORK_BRANCH:-develop}"
+  local work_branch="${OPENCODE_WORK_BRANCH:-main}"
 
   echo
   echo "Listing repos in org ${GH_ORG}..."
@@ -328,10 +394,13 @@ for r in sorted(data, key=lambda x: x['name'].lower()):
     exit 1
   fi
 
-  local -a desired=()
-  local name target
+  local -a desired=() selected_dirs=()
+  local name target clone_fail=0
   for name in ${SELECTED_ITEMS[@]+"${SELECTED_ITEMS[@]}"}; do
     target="${WORKSPACE_ROOT}/${name}"
+    # The selection is what the operator chose; a repo that fails to clone is
+    # still selected, so it must not look deselected to sync_projects.
+    selected_dirs+=("$target")
     if [[ "$DRY_RUN" == "1" ]]; then
       echo "[dry-run] would ensure clone ${GH_ORG}/${name} -> ${target} (checkout ${work_branch})"
       desired+=("$target")
@@ -342,18 +411,34 @@ for r in sorted(data, key=lambda x: x['name'].lower()):
       ensure_work_branch "$target"
     else
       echo "Cloning ${name}..."
-      # Prefer cloning straight onto the work branch when it exists remotely.
-      # If -b fails (missing branch / partial dir), remove and clone default, then ensure.
-      if ! docker_exec_user gh repo clone "${GH_ORG}/${name}" "$target" -- -b "$work_branch" 2>/dev/null; then
-        docker_exec_user rm -rf "$target" 2>/dev/null || true
-        docker_exec_user gh repo clone "${GH_ORG}/${name}" "$target"
+      if ! clone_github_repo "$GH_ORG" "$name" "$target"; then
+        echo "  failed to clone ${name}; not registering it" >&2
+        clone_fail=$((clone_fail + 1))
+        continue
       fi
-      ensure_work_branch "$target"
+      # An unpopulated clone would be registered as an empty project, so treat a
+      # failed checkout as a failure instead of adding the path to the set.
+      if ! ensure_work_branch "$target" 1; then
+        echo "  failed to check out ${name}; not registering it" >&2
+        clone_fail=$((clone_fail + 1))
+        continue
+      fi
     fi
     desired+=("$target")
   done
 
-  sync_projects ${desired[@]+"${desired[@]}"}
+  if (( clone_fail > 0 )); then
+    echo
+    echo "${clone_fail} repo(s) could not be cloned or checked out; registering the rest." >&2
+  fi
+
+  local sync_rc=0
+  SYNC_SELECTED_DIRS=("${selected_dirs[@]}")
+  sync_projects ${desired[@]+"${desired[@]}"} || sync_rc=$?
+  if (( clone_fail > 0 && sync_rc == 0 )); then
+    sync_rc=1
+  fi
+  return "$sync_rc"
 }
 
 _path_in_list() {
@@ -369,22 +454,48 @@ _path_in_list() {
 # Sync server to exactly the desired host-path project dirs (OPENCODE_APPS_DIR).
 sync_projects() {
   local -a desired=("$@")
+  # Repos the operator selected, which may include paths whose clone failed.
+  # Removals are computed from this so a failed clone never deregisters a project.
+  local -a selected=("$@")
+  if [[ -n "${SYNC_SELECTED_DIRS[0]+set}" ]]; then
+    selected=("${SYNC_SELECTED_DIRS[@]}")
+  fi
   local -a current=()
   local line
   while IFS= read -r line; do
     [[ -n "$line" ]] && current+=("$line")
   done < <(list_registered_workspace_projects)
 
-  local -a to_add=() to_remove=()
+  local -a to_add=() to_remove=() reseed=()
   local d
   for d in ${desired[@]+"${desired[@]}"}; do
     _path_in_list "$d" ${current[@]+"${current[@]}"} || to_add+=("$d")
   done
   for d in ${current[@]+"${current[@]}"}; do
-    _path_in_list "$d" ${desired[@]+"${desired[@]}"} || to_remove+=("$d")
+    _path_in_list "$d" ${selected[@]+"${selected[@]}"} || to_remove+=("$d")
   done
 
-  local keep_count=$(( ${#desired[@]} - ${#to_add[@]} ))
+  # A project persisted by an earlier run whose seed POST failed (or whose
+  # misplaced seed was cleaned up) is in /api/project but has no session. Re-seed
+  # it instead of leaving it half-registered forever.
+  local session_dirs="" project_list answer
+  if [[ "$DRY_RUN" != "1" ]] && session_dirs="$(session_directories)"; then
+    project_list="$(printf '%s\n' ${current[@]+"${current[@]}"})"
+    for d in ${desired[@]+"${desired[@]}"}; do
+      _path_in_list "$d" ${current[@]+"${current[@]}"} || continue
+      answer="$(printf '%s\n' "$session_dirs" | dir_has_session "$d" "$project_list" || true)"
+      case "$answer" in
+        yes) ;;
+        no)
+          to_add+=("$d")
+          reseed+=("$d")
+          ;;
+        *) echo "  could not check sessions for ${d}; leaving it unchanged" >&2 ;;
+      esac
+    done
+  fi
+
+  local keep_count=$(( ${#desired[@]} - ${#to_add[@]} + ${#reseed[@]} ))
   if (( keep_count < 0 )); then keep_count=0; fi
 
   echo
@@ -394,7 +505,14 @@ sync_projects() {
   echo "  remove: ${#to_remove[@]}"
   if [[ ${#to_add[@]} -gt 0 ]]; then
     local x
-    for x in "${to_add[@]}"; do echo "    + ${x}"; done
+    for x in "${to_add[@]}"; do
+      _path_in_list "$x" ${reseed[@]+"${reseed[@]}"} || echo "    + ${x}"
+    done
+  fi
+  if [[ ${#reseed[@]} -gt 0 ]]; then
+    echo "  re-seed (registered, no session): ${#reseed[@]}"
+    local x
+    for x in "${reseed[@]}"; do echo "    ~ ${x}"; done
   fi
   if [[ ${#to_remove[@]} -gt 0 ]]; then
     local x
@@ -404,7 +522,11 @@ sync_projects() {
   if [[ ${#to_add[@]} -eq 0 && ${#to_remove[@]} -eq 0 ]]; then
     echo "  (no server changes — will still run hosts/session cleanup)"
   elif [[ "$YES" != "1" && "$DRY_RUN" != "1" ]]; then
-    read -r -p "Apply sync? [Y/n] " confirm
+    if ! read -r -p "Apply sync? [Y/n] " confirm; then
+      echo
+      echo "No answer (EOF) — aborted without changing the server." >&2
+      exit 1
+    fi
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
       echo "Aborted."
       exit 0
@@ -422,7 +544,7 @@ sync_projects() {
         continue
       fi
       if result="$(deregister_project "$d" 2>&1)"; then
-        echo "  removed sessions for ${d}"
+        echo "  archived ${d} and removed its sessions"
         ok_rm=$((ok_rm + 1))
       else
         echo "  failed deregister ${d}: ${result}" >&2
@@ -431,6 +553,7 @@ sync_projects() {
     done
   fi
 
+  local ok_reseed=0
   if [[ ${#to_add[@]} -gt 0 ]]; then
     echo
     echo "Registering..."
@@ -439,9 +562,19 @@ sync_projects() {
         echo "  [dry-run] register ${d}"
         continue
       fi
-      if result="$(register_project "$d" "$(basename "$d")" 2>&1)"; then
+      # Capture only the status token: register_project writes diagnostics to
+      # stderr, which must not be merged into the ok/skip answer.
+      if result="$(register_project "$d" "$(basename "$d")")"; then
         case "$result" in
-          ok)   echo "  registered ${d}"; ok_add=$((ok_add + 1)) ;;
+          ok)
+            if _path_in_list "$d" ${reseed[@]+"${reseed[@]}"}; then
+              echo "  re-seeded ${d}"
+              ok_reseed=$((ok_reseed + 1))
+            else
+              echo "  registered ${d}"
+              ok_add=$((ok_add + 1))
+            fi
+            ;;
           skip) echo "  skipped ${d}"; skip_add=$((skip_add + 1)) ;;
           *)    echo "  ${d}: ${result}" ;;
         esac
@@ -457,7 +590,7 @@ sync_projects() {
     echo "Dry run complete."
   else
     normalize_registered_projects || true
-    echo "Sync done: +${ok_add} registered (${skip_add} skip), -${ok_rm} deregistered, fails add=${fail_add} rm=${fail_rm}."
+    echo "Sync done: +${ok_add} registered (${skip_add} skip), ~${ok_reseed} re-seeded, -${ok_rm} deregistered, fails add=${fail_add} rm=${fail_rm}."
     echo
     echo "Projects on server:"
     list_projects_json | python3 -m json.tool 2>/dev/null || list_projects_json
@@ -492,7 +625,7 @@ sync_projects() {
 run_bootstrap_only() {
   load_env || true
   if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
-    wait_for_health 5 || echo "Warning: OpenCode API not reachable; session cleanup may fail." >&2
+    wait_for_health 5 || echo "Warning: OpenCode API not reachable; deep links may be stale." >&2
   fi
   local -a dirs=()
   local line
@@ -574,4 +707,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${SETUP_TEST_NO_MAIN:-0}" != "1" ]]; then
+  main "$@"
+fi
