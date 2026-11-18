@@ -73,6 +73,9 @@ COMMAND=""
 PROJECT_MODE=""
 AUTO_HOSTS_PREFLIGHT="${AUTO_HOSTS_PREFLIGHT:-1}"
 PREFLIGHT_HOSTS_PREPARED=0
+# Optional: the selected project set when it differs from the paths ready to
+# register (GitHub mode with a failed clone). Removals use this set.
+SYNC_SELECTED_DIRS=()
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
@@ -252,6 +255,8 @@ ensure_work_branch() {
 
   if ! docker_exec_git "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "  warning: cannot access repo as ${OPENCODE_UID}:${OPENCODE_GID} (ownership/permissions mismatch) — left unchanged" >&2
+    # A fresh clone with no usable checkout must not be registered.
+    [[ "$fresh_clone" == "1" ]] && return 1
     return 0
   fi
 
@@ -267,6 +272,8 @@ ensure_work_branch() {
     else
       current="$(docker_exec_git "$dir" branch --show-current 2>/dev/null || true)"
       echo "  no origin/${OPENCODE_WORK_BRANCH:-main} remote branch — left on ${current:-<no branch>}"
+      # Without any branch to check out, a fresh clone is still empty.
+      [[ "$fresh_clone" == "1" ]] && return 1
       return 0
     fi
   fi
@@ -387,10 +394,13 @@ for r in sorted(data, key=lambda x: x['name'].lower()):
     exit 1
   fi
 
-  local -a desired=()
+  local -a desired=() selected_dirs=()
   local name target clone_fail=0
   for name in ${SELECTED_ITEMS[@]+"${SELECTED_ITEMS[@]}"}; do
     target="${WORKSPACE_ROOT}/${name}"
+    # The selection is what the operator chose; a repo that fails to clone is
+    # still selected, so it must not look deselected to sync_projects.
+    selected_dirs+=("$target")
     if [[ "$DRY_RUN" == "1" ]]; then
       echo "[dry-run] would ensure clone ${GH_ORG}/${name} -> ${target} (checkout ${work_branch})"
       desired+=("$target")
@@ -423,6 +433,7 @@ for r in sorted(data, key=lambda x: x['name'].lower()):
   fi
 
   local sync_rc=0
+  SYNC_SELECTED_DIRS=("${selected_dirs[@]}")
   sync_projects ${desired[@]+"${desired[@]}"} || sync_rc=$?
   if (( clone_fail > 0 && sync_rc == 0 )); then
     sync_rc=1
@@ -443,6 +454,12 @@ _path_in_list() {
 # Sync server to exactly the desired host-path project dirs (OPENCODE_APPS_DIR).
 sync_projects() {
   local -a desired=("$@")
+  # Repos the operator selected, which may include paths whose clone failed.
+  # Removals are computed from this so a failed clone never deregisters a project.
+  local -a selected=("$@")
+  if [[ -n "${SYNC_SELECTED_DIRS[0]+set}" ]]; then
+    selected=("${SYNC_SELECTED_DIRS[@]}")
+  fi
   local -a current=()
   local line
   while IFS= read -r line; do
@@ -455,21 +472,26 @@ sync_projects() {
     _path_in_list "$d" ${current[@]+"${current[@]}"} || to_add+=("$d")
   done
   for d in ${current[@]+"${current[@]}"}; do
-    _path_in_list "$d" ${desired[@]+"${desired[@]}"} || to_remove+=("$d")
+    _path_in_list "$d" ${selected[@]+"${selected[@]}"} || to_remove+=("$d")
   done
 
   # A project persisted by an earlier run whose seed POST failed (or whose
   # misplaced seed was cleaned up) is in /api/project but has no session. Re-seed
   # it instead of leaving it half-registered forever.
-  local session_dirs="" project_list
+  local session_dirs="" project_list answer
   if [[ "$DRY_RUN" != "1" ]] && session_dirs="$(session_directories)"; then
     project_list="$(printf '%s\n' ${current[@]+"${current[@]}"})"
     for d in ${desired[@]+"${desired[@]}"}; do
       _path_in_list "$d" ${current[@]+"${current[@]}"} || continue
-      if ! dir_has_session "$d" "$session_dirs" "$project_list"; then
-        to_add+=("$d")
-        reseed+=("$d")
-      fi
+      answer="$(printf '%s\n' "$session_dirs" | dir_has_session "$d" "$project_list" || true)"
+      case "$answer" in
+        yes) ;;
+        no)
+          to_add+=("$d")
+          reseed+=("$d")
+          ;;
+        *) echo "  could not check sessions for ${d}; leaving it unchanged" >&2 ;;
+      esac
     done
   fi
 
@@ -483,10 +505,14 @@ sync_projects() {
   echo "  remove: ${#to_remove[@]}"
   if [[ ${#to_add[@]} -gt 0 ]]; then
     local x
-    for x in "${to_add[@]}"; do echo "    + ${x}"; done
+    for x in "${to_add[@]}"; do
+      _path_in_list "$x" ${reseed[@]+"${reseed[@]}"} || echo "    + ${x}"
+    done
   fi
   if [[ ${#reseed[@]} -gt 0 ]]; then
     echo "  re-seed (registered, no session): ${#reseed[@]}"
+    local x
+    for x in "${reseed[@]}"; do echo "    ~ ${x}"; done
   fi
   if [[ ${#to_remove[@]} -gt 0 ]]; then
     local x
@@ -496,7 +522,11 @@ sync_projects() {
   if [[ ${#to_add[@]} -eq 0 && ${#to_remove[@]} -eq 0 ]]; then
     echo "  (no server changes — will still run hosts/session cleanup)"
   elif [[ "$YES" != "1" && "$DRY_RUN" != "1" ]]; then
-    read -r -p "Apply sync? [Y/n] " confirm || true
+    if ! read -r -p "Apply sync? [Y/n] " confirm; then
+      echo
+      echo "No answer (EOF) — aborted without changing the server." >&2
+      exit 1
+    fi
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
       echo "Aborted."
       exit 0
@@ -523,6 +553,7 @@ sync_projects() {
     done
   fi
 
+  local ok_reseed=0
   if [[ ${#to_add[@]} -gt 0 ]]; then
     echo
     echo "Registering..."
@@ -531,14 +562,24 @@ sync_projects() {
         echo "  [dry-run] register ${d}"
         continue
       fi
-      if result="$(register_project "$d" "$(basename "$d")" 2>&1)"; then
+      # Capture only the status token: register_project writes diagnostics to
+      # stderr, which must not be merged into the ok/skip answer.
+      if result="$(register_project "$d" "$(basename "$d")")"; then
         case "$result" in
-          ok)   echo "  registered ${d}"; ok_add=$((ok_add + 1)) ;;
+          ok)
+            if _path_in_list "$d" ${reseed[@]+"${reseed[@]}"}; then
+              echo "  re-seeded ${d}"
+              ok_reseed=$((ok_reseed + 1))
+            else
+              echo "  registered ${d}"
+              ok_add=$((ok_add + 1))
+            fi
+            ;;
           skip) echo "  skipped ${d}"; skip_add=$((skip_add + 1)) ;;
           *)    echo "  ${d}: ${result}" ;;
         esac
       else
-        echo "  failed ${d}: ${result}" >&2
+        echo "  failed ${d}" >&2
         fail_add=$((fail_add + 1))
       fi
     done
@@ -549,7 +590,7 @@ sync_projects() {
     echo "Dry run complete."
   else
     normalize_registered_projects || true
-    echo "Sync done: +${ok_add} registered (${skip_add} skip), -${ok_rm} deregistered, fails add=${fail_add} rm=${fail_rm}."
+    echo "Sync done: +${ok_add} registered (${skip_add} skip), ~${ok_reseed} re-seeded, -${ok_rm} deregistered, fails add=${fail_add} rm=${fail_rm}."
     echo
     echo "Projects on server:"
     list_projects_json | python3 -m json.tool 2>/dev/null || list_projects_json
@@ -584,7 +625,7 @@ sync_projects() {
 run_bootstrap_only() {
   load_env || true
   if [[ "$SKIP_PREFLIGHT" != "1" ]]; then
-    wait_for_health 5 || echo "Warning: OpenCode API not reachable; session cleanup may fail." >&2
+    wait_for_health 5 || echo "Warning: OpenCode API not reachable; deep links may be stale." >&2
   fi
   local -a dirs=()
   local line
