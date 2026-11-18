@@ -163,7 +163,9 @@ test_registration_resolves_location_before_creating_a_session() {
   rm -f "$RESOLVED_MARKER"
   list_projects_json() {
     if [[ -f "$RESOLVED_MARKER" ]]; then
-      printf '[{"canonical":"%s"}]\n' "$target"
+      # Include the id: the resolved project is verified by id when the server
+      # supplies one, so a path-only entry would not prove the right project.
+      printf '[{"id":"project-1","canonical":"%s"}]\n' "$target"
     else
       echo '[]'
     fi
@@ -303,6 +305,47 @@ assert rows == {"remove": 1, "keep": 0}, rows
 ' "${db_dir}/opencode/opencode.db" || return 1
 }
 
+test_session_scope_respects_nested_projects() {
+  # shellcheck source=../scripts/lib/opencode-api.sh
+  source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
+  local parent="/home/robin/apps/parent"
+  local child="/home/robin/apps/parent/child"
+  local out
+  # A registered parent must not claim its child project's own sessions.
+  out="$(printf '%s\n' "$child" | dir_has_session "$child" "$parent"$'\n'"$child")"
+  [[ "$out" == "yes" ]] || { fail "child session excluded by its parent project (got '${out}')"; return 1; }
+  # A nested project's sessions stay out of its parent's scope.
+  out="$(printf '%s\n' "$child" | dir_has_session "$parent" "$parent"$'\n'"$child")"
+  [[ "$out" == "no" ]] || { fail "nested project session leaked into the parent (got '${out}')"; return 1; }
+  # A plain subdirectory session belongs to the project.
+  out="$(printf '%s\n' "$parent/src" | dir_has_session "$parent" "$parent")"
+  [[ "$out" == "yes" ]] || { fail "subdirectory session not attributed to its project (got '${out}')"; return 1; }
+}
+
+test_removal_refuses_an_unreadable_project_list() {
+  # shellcheck source=../scripts/lib/opencode-api.sh
+  source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
+  list_sessions_json() { printf '[{"id":"ses_1","location":{"directory":"/home/robin/apps/example"}}]'; }
+  # Without the project list, nested projects cannot be told apart from this one.
+  api_get() { return 1; }
+  if list_sessions_for_directory "/home/robin/apps/example" >/dev/null 2>&1; then
+    fail "session selection must fail when /api/project cannot be read"
+    return 1
+  fi
+}
+
+test_removal_verification_flags_an_invalid_list() {
+  # shellcheck source=../scripts/lib/opencode-api.sh
+  source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
+  api_get() { printf 'null'; }
+  local out
+  out="$(project_presence "/home/robin/apps/example")"
+  [[ "$out" == "invalid" ]] || { fail "a non-array response must be invalid (got '${out}')"; return 1; }
+  api_get() { printf '[]'; }
+  out="$(project_presence "/home/robin/apps/example")"
+  [[ "$out" == "absent" ]] || { fail "an empty array must mean absent (got '${out}')"; return 1; }
+}
+
 test_deregistration_archives_the_project_as_well_as_deleting_sessions() {
   # shellcheck source=../scripts/lib/opencode-api.sh
   source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
@@ -430,6 +473,9 @@ run_test "registration rejects parent-directory sessions" test_registration_reje
 run_test "registration retries a missing seed" test_registration_retries_a_missing_seed
 run_test "session delete treats 404 as deleted" test_api_delete_treats_an_absent_session_as_deleted
 run_test "archive updates only the selected SQLite project" test_archive_marks_only_the_selected_project_in_sqlite
+run_test "session scope respects nested projects" test_session_scope_respects_nested_projects
+run_test "removal refuses an unreadable project list" test_removal_refuses_an_unreadable_project_list
+run_test "removal verification flags an invalid list" test_removal_verification_flags_an_invalid_list
 run_test "deregistration archives the project" test_deregistration_archives_the_project_as_well_as_deleting_sessions
 run_test "deregistration refuses a non-local API host" test_deregistration_refuses_a_non_local_api_host
 run_test "repo env paste defaults to skip" test_repo_env_defaults_to_skip_without_blocking_setup
