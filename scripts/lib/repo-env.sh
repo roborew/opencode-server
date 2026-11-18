@@ -134,9 +134,15 @@ read_env_paste_to_file() {
   tmp="$(mktemp)"
   echo "Paste env vars (KEY=value lines). End with a line containing only: ."
   echo "(Input is not echoed to the terminal log beyond this prompt.)"
-  local line
-  while IFS= read -r line; do
-    if [[ "$line" == "." ]]; then
+  local line trimmed
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    # Accept "." even when the paste carries CRLF or trailing spaces; otherwise
+    # the terminator is missed and the prompt appears to hang. Ctrl-D (EOF) also
+    # ends the loop, so a paste without the marker still gets written.
+    line="${line%$'\r'}"
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    if [[ "$trimmed" == "." ]]; then
       break
     fi
     printf '%s\n' "$line" >>"$tmp"
@@ -190,7 +196,9 @@ ensure_repo_env_interactive() {
         return 0
       fi
       local confirm
-      read -r -p "           Add environment variables for ${name} now? [y/N] " confirm
+      # `|| true` so Ctrl-D under `set -e` follows the same skip path as an
+      # empty answer instead of aborting setup before client bootstrap.
+      read -r -p "           Add environment variables for ${name} now? [y/N] " confirm || true
       if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo "           skipped — add manually later: ${repo}/.env (required before sandbox builds)"
         return 0

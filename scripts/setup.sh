@@ -200,8 +200,6 @@ run_projects_local() {
   sync_projects ${DESIRED_DIRS[@]+"${DESIRED_DIRS[@]}"}
 }
 
-# After clone/fetch: land on OPENCODE_WORK_BRANCH (default main) when origin has it.
-# Does not force-reset local work; warns and leaves the current branch if checkout fails.
 # Run as OPENCODE_UID — host binds must be owned by that user (same as serve).
 docker_exec_git() {
   local dir="$1"
@@ -225,10 +223,31 @@ docker_exec_user() {
   docker exec -u "${uid}:${gid}" "$CONTAINER_NAME" "$@"
 }
 
+# Resolve the remote default branch (origin/HEAD), refreshing the ref once when
+# it is missing. Prints the branch name without the origin/ prefix.
+remote_default_branch() {
+  local dir="$1" branch
+  branch="$(docker_exec_git "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [[ -z "$branch" ]]; then
+    docker_exec_git "$dir" remote set-head origin --auto >/dev/null 2>&1 || true
+    branch="$(docker_exec_git "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  fi
+  echo "${branch#origin/}"
+}
+
+# After clone/fetch: land on OPENCODE_WORK_BRANCH (default main) when origin has
+# it. Trunk-based repos only carry the default branch, so when the configured
+# branch is absent we fall back to the remote default (origin/HEAD) instead of
+# warning. Pass `1` as the second arg after a `--no-checkout` clone: HEAD there is
+# already on the remote default but the index is empty, so the name check alone
+# would skip the checkout that populates the worktree.
+# Does not force-reset local work; leaves an existing unrelated branch alone.
 ensure_work_branch() {
   local dir="$1"
+  local fresh_clone="${2:-0}"
   local branch="${OPENCODE_WORK_BRANCH:-main}"
   local current remote_ref="refs/remotes/origin/${branch}"
+  local using_fallback=0
 
   if ! docker_exec_git "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "  warning: cannot access repo as ${OPENCODE_UID}:${OPENCODE_GID} (ownership/permissions mismatch) — left unchanged" >&2
@@ -238,23 +257,50 @@ ensure_work_branch() {
   docker_exec_git "$dir" fetch --prune origin >/dev/null 2>&1 || true
 
   if ! docker_exec_git "$dir" show-ref --verify --quiet "$remote_ref" 2>/dev/null; then
-    current="$(docker_exec_git "$dir" branch --show-current 2>/dev/null || echo '?')"
-    echo "  warning: origin/${branch} missing — left on ${current}" >&2
-    return 0
+    local fallback
+    fallback="$(remote_default_branch "$dir")"
+    if [[ -n "$fallback" ]] && docker_exec_git "$dir" show-ref --verify --quiet "refs/remotes/origin/${fallback}" 2>/dev/null; then
+      branch="$fallback"
+      remote_ref="refs/remotes/origin/${branch}"
+      using_fallback=1
+    else
+      current="$(docker_exec_git "$dir" branch --show-current 2>/dev/null || true)"
+      echo "  no origin/${OPENCODE_WORK_BRANCH:-main} remote branch — left on ${current:-<no branch>}"
+      return 0
+    fi
   fi
 
   current="$(docker_exec_git "$dir" branch --show-current 2>/dev/null || true)"
-  if [[ "$current" != "$branch" ]]; then
-    if docker_exec_git "$dir" show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
-      if ! docker_exec_git "$dir" checkout "$branch" >/dev/null 2>&1; then
-        echo "  warning: could not checkout ${branch} (local changes?) — left on ${current:-?}" >&2
-        return 0
-      fi
-    else
-      if ! docker_exec_git "$dir" checkout -b "$branch" --track "origin/${branch}" >/dev/null 2>&1; then
-        echo "  warning: could not create local ${branch} from origin/${branch}" >&2
-        return 0
-      fi
+  if [[ "$fresh_clone" == "1" ]]; then
+    # `checkout -f` is safe here: this runs immediately after a fresh clone, so
+    # there is no local work to discard.
+    if ! docker_exec_git "$dir" checkout -f "$branch" >/dev/null 2>&1; then
+      echo "  warning: cloned repo could not check out ${branch}" >&2
+      return 0
+    fi
+    echo "  on ${branch}"
+    return 0
+  fi
+  if [[ "$current" == "$branch" ]]; then
+    docker_exec_git "$dir" merge --ff-only "origin/${branch}" >/dev/null 2>&1 || true
+    echo "  on ${branch}"
+    return 0
+  fi
+  # An existing unrelated branch is never moved when we fell back to the remote
+  # default, so work-in-progress branches survive a trunk-only remote.
+  if (( using_fallback )) && [[ -n "$current" ]]; then
+    echo "  on ${current} (no origin/${OPENCODE_WORK_BRANCH:-main} remote branch)"
+    return 0
+  fi
+  if docker_exec_git "$dir" show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
+    if ! docker_exec_git "$dir" checkout "$branch" >/dev/null 2>&1; then
+      echo "  warning: could not checkout ${branch} (local changes?) — left on ${current:-<no branch>}" >&2
+      return 0
+    fi
+  else
+    if ! docker_exec_git "$dir" checkout -b "$branch" --track "origin/${branch}" >/dev/null 2>&1; then
+      echo "  warning: could not create local ${branch} from origin/${branch}" >&2
+      return 0
     fi
   fi
 
@@ -262,11 +308,12 @@ ensure_work_branch() {
   echo "  on ${branch}"
 }
 
-# Clone with the remote's default branch, then ensure_work_branch moves to main.
-# Avoid probing a legacy develop branch or deleting a partial clone to retry it.
+# Clone without a checkout so a failing checkout filter on the remote default
+# branch cannot abort the clone; ensure_work_branch then lands on the configured
+# branch when it exists, or on the remote default otherwise.
 clone_github_repo() {
   local org="$1" name="$2" target="$3"
-  docker_exec_user gh repo clone "${org}/${name}" "$target"
+  docker_exec_user gh repo clone "${org}/${name}" "$target" -- --no-checkout
 }
 
 run_projects_github() {
@@ -350,7 +397,7 @@ for r in sorted(data, key=lambda x: x['name'].lower()):
     else
       echo "Cloning ${name}..."
       clone_github_repo "$GH_ORG" "$name" "$target"
-      ensure_work_branch "$target"
+      ensure_work_branch "$target" 1
     fi
     desired+=("$target")
   done

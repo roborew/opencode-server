@@ -446,6 +446,24 @@ print((session.get("location") or {}).get("directory") or "")
   fi
   if [[ "$actual" != "$dir" ]]; then
     echo "seed session landed in ${actual:-<unknown>} instead of ${dir}" >&2
+    # Delete only the session this attempt created; the caller may retry, and a
+    # stray session in the parent directory would otherwise linger forever.
+    local session_id
+    session_id="$(python3 -c '
+import json, sys
+value = json.loads(sys.argv[1])
+session = value.get("data") or value
+print(session.get("id") or "")
+' "$response" 2>/dev/null || true)"
+    if [[ -z "$session_id" ]]; then
+      echo "create-session response had no id; the misplaced session was left in place" >&2
+      return 1
+    fi
+    if api_delete "/api/session/${session_id}" >/dev/null 2>&1; then
+      echo "removed the misplaced seed session ${session_id}" >&2
+    else
+      echo "could not remove misplaced seed session ${session_id}; it remains on the server" >&2
+    fi
     return 1
   fi
   if ! project_registered "$dir"; then
@@ -550,10 +568,50 @@ print(json.dumps(out))
 # v2 has no project.delete or project.archive endpoint. Archive removed
 # projects in the same on-volume DB used by Project.sweep; /api/project omits
 # archived rows immediately, and resolving the location later unarchives them.
+#
+# Session deletes go through OPENCODE_HOST while the archive below writes SQLite
+# in the local container. Refuse when those are not the same instance, otherwise
+# `--host` could delete sessions on one server and archive a project on another.
+require_same_server_for_archive() {
+  local base publish_port host port
+  base="$(opencode_base_url)"
+  publish_port="${OPENCODE_PUBLISH_PORT:-4097}"
+  publish_port="${publish_port##*:}"
+  host="${base#*://}"
+  host="${host%%/*}"
+  port=""
+  if [[ "$host" == \[*\]* ]]; then
+    # Bracketed IPv6: [::1]:4097
+    port="${host#*\]}"
+    host="${host%%\]*}"
+    host="${host#\[}"
+    port="${port#:}"
+  elif [[ "$host" == *:* ]]; then
+    port="${host##*:}"
+    host="${host%:*}"
+  fi
+  case "$host" in
+    127.0.0.1 | localhost | ::1 | 0.0.0.0) ;;
+    *)
+      echo "refusing to delete sessions or archive projects: API target ${base} is not the local container (${CONTAINER_NAME}) — archive_project would edit a different server's database" >&2
+      return 1
+      ;;
+  esac
+  # An explicit host without a port falls back to :80, never the publish port.
+  if [[ "$port" != "$publish_port" ]]; then
+    echo "refusing to delete sessions or archive projects: API target ${base} does not use the local publish port ${publish_port} — archive_project would edit a different server's database" >&2
+    return 1
+  fi
+  return 0
+}
+
 archive_project() {
   local dir="$1"
   local path
   path="$(to_host_workspace_path "$dir")"
+  if ! require_same_server_for_archive; then
+    return 1
+  fi
   docker_exec python3 -c '
 import sqlite3, sys, time
 db_path, directory = sys.argv[1], sys.argv[2].rstrip("/")
@@ -577,6 +635,12 @@ deregister_project() {
   local path
   path="$(to_host_workspace_path "$dir")"
   local ok=0 fail=0
+
+  # Check before any session is deleted: the archive below only works on the
+  # local container's DB, so a non-local --host must not be deregistered.
+  if ! require_same_server_for_archive; then
+    return 1
+  fi
 
   local sessions ids
   if ! sessions="$(list_sessions_for_directory "$path")"; then
@@ -611,6 +675,12 @@ for s in json.loads(sys.argv[1] or '[]'):
   fi
   if ! archive_project "$path"; then
     echo "fail"
+    return 1
+  fi
+  # The archive writes SQLite directly, so a server that keeps serving its own
+  # project list would otherwise be reported as a successful removal.
+  if project_registered "$path"; then
+    echo "archived ${path} in the local database but the server still lists it — verify ${CONTAINER_NAME} uses that database, then re-run" >&2
     return 1
   fi
   echo "ok"
