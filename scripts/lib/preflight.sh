@@ -343,14 +343,17 @@ check_opencode_health() {
   deadline=$(( SECONDS + ready_timeout ))
 
   # Resolve the server password once, bounded, so the readiness loop never runs
-  # `docker ps` / `docker exec` (no timeout of their own) on every iteration.
-  if [[ -z "${OPENCODE_SERVER_PASSWORD:-}" || "${OPENCODE_SERVER_PASSWORD}" == "change-me" ]] \
-    && command -v python3 >/dev/null 2>&1; then
-    local password
-    password="$(_run_with_timeout 5 docker exec "$CONTAINER_NAME" printenv OPENCODE_SERVER_PASSWORD 2>/dev/null || true)"
-    if [[ -n "$password" ]]; then
-      export OPENCODE_SERVER_PASSWORD="$password"
-    fi
+  # `docker ps` / `docker exec` (no timeout of their own). Reserve a second of
+  # the budget for the probe itself, and mark credentials as resolved even on
+  # failure so nothing retries Docker later in the loop.
+  local cred_timeout
+  cred_timeout=$(( deadline - SECONDS - 1 ))
+  if (( cred_timeout > 0 )); then
+    (( cred_timeout > 5 )) && cred_timeout=5
+    api_resolve_credentials "$cred_timeout"
+  else
+    OPENCODE_API_CREDENTIALS_RESOLVED=1
+    export OPENCODE_API_CREDENTIALS_RESOLVED
   fi
 
   while (( SECONDS < deadline )); do
@@ -434,18 +437,28 @@ check_opencode_health() {
 
   # Classify the last observed status. Do not start another request when the
   # budget is gone — report what we already know.
+  local confirmed=0
   if (( SECONDS >= deadline )); then
     deadline_reached=1
   else
     code="$(curl -s -o /dev/null -w '%{http_code}' \
       --connect-timeout 2 --max-time "$(_readiness_probe_timeout "$deadline")" \
       "http://127.0.0.1:${port}/api/info" 2>/dev/null || true)"
+    confirmed=1
   fi
   code="${code:-000}"
   if [[ "$code" == "401" ]]; then
-    preflight_record warn \
-      "opencode-server up (HTTP 401) — could not authenticate health check" \
-      "password missing/mismatch in container; check OPENCODE_SERVER_PASSWORD in .env or Infisical"
+    if (( confirmed )); then
+      preflight_record warn \
+        "opencode-server up (HTTP 401) — could not authenticate health check" \
+        "password missing/mismatch in container; check OPENCODE_SERVER_PASSWORD in .env or Infisical"
+    else
+      # A 401 seen before the Infisical fallback does not prove the endpoint is
+      # still up, so do not report it as healthy.
+      preflight_record warn \
+        "opencode-server answered 401, but readiness is unconfirmed — the deadline expired before a recheck" \
+        "re-run preflight, or raise OPENCODE_READY_TIMEOUT; check OPENCODE_SERVER_PASSWORD"
+    fi
     return
   fi
   if [[ "$code" == "000" ]]; then
@@ -580,8 +593,9 @@ _workspace_path_accessible() {
 # bind mount. Uses docker's Go templates so no host python3 is required; empty
 # output means the container could not be inspected.
 _workspace_mount_info() {
+  # Unit separator (0x1f) instead of "|": a "|" in a path would split the fields.
   docker inspect "$CONTAINER_NAME" --format \
-    '{{.Id}}{{range .Mounts}}{{"\n"}}{{.Destination}}|{{.Source}}{{end}}' 2>/dev/null
+    '{{.Id}}{{range .Mounts}}{{"\n"}}{{.Destination}}{{"\u001f"}}{{.Source}}{{end}}' 2>/dev/null
 }
 
 # Read the container id and bind mounts in one inspect. Sets WORKSPACE_BIND_ID
@@ -592,7 +606,7 @@ _workspace_bind_lookup() {
   WORKSPACE_BIND_ID=""
   WORKSPACE_BIND_SOURCE=""
   info="$(_workspace_mount_info || true)"
-  while IFS='|' read -r dest src; do
+  while IFS=$'\x1f' read -r dest src; do
     if (( first )); then
       first=0
       WORKSPACE_BIND_ID="$dest"
@@ -653,18 +667,36 @@ check_workspace_root_ownership() {
         "recreate the container after changing OPENCODE_APPS_DIR: ./scripts/compose.sh up -d --force-recreate opencode"
       return
     fi
-    # Target the inspected container id: if Compose replaced it in between, this
-    # fails instead of chowning a different mount at the same path.
-    if ! docker exec -u 0 "$WORKSPACE_BIND_ID" chown "${current_uid}:${current_gid}" "$WORKSPACE_ROOT" 2>/dev/null; then
+    # Path strings can still match a directory that was renamed and recreated
+    # while the container kept the old bind. Compare device+inode where the host
+    # and container share a device namespace (Linux); Docker Desktop's virtiofs
+    # exposes different device ids, so only enforce it when they agree.
+    local host_ident container_ident
+    # GNU stat uses -c, BSD/macOS uses -f; probe the flag rather than the output.
+    if stat -c '%d:%i' / >/dev/null 2>&1; then
+      host_ident="$(stat -c '%d:%i' "$WORKSPACE_ROOT" 2>/dev/null || true)"
+    else
+      host_ident="$(stat -f '%d:%i' "$WORKSPACE_ROOT" 2>/dev/null || true)"
+    fi
+    container_ident="$(
+      docker exec -u 0 "$WORKSPACE_BIND_ID" stat -c '%d:%i' "$WORKSPACE_ROOT" 2>/dev/null || true
+    )"
+    if [[ -n "$host_ident" && -n "$container_ident" \
+      && "${host_ident%%:*}" == "${container_ident%%:*}" && "$host_ident" != "$container_ident" ]]; then
       preflight_record fail \
-        "could not chown ${WORKSPACE_ROOT} through ${CONTAINER_NAME} (container replaced?)" \
-        "re-run preflight, then ./scripts/compose.sh up -d --force-recreate opencode"
+        "workspace bind at ${WORKSPACE_ROOT} is not this host directory (device/inode mismatch)" \
+        "./scripts/compose.sh up -d --force-recreate opencode   # then re-run preflight"
       return
     fi
-    if _workspace_path_accessible "$WORKSPACE_ROOT"; then
+    # Target the inspected container id: if Compose replaced it in between, this
+    # fails instead of chowning a different mount at the same path.
+    if docker exec -u 0 "$WORKSPACE_BIND_ID" chown "${current_uid}:${current_gid}" "$WORKSPACE_ROOT" 2>/dev/null \
+      && _workspace_path_accessible "$WORKSPACE_ROOT"; then
       preflight_record ok "workspace root ownership repaired (uid ${current_uid}:${current_gid})"
       return
     fi
+    # A failed container chown may just mean the host user needs search access
+    # restored; fall through to the host-side hint instead of returning.
   fi
   # `[[ -O ]]` is portable; GNU `stat -c` is not available on macOS.
   if [[ -O "$WORKSPACE_ROOT" ]]; then
