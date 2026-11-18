@@ -73,7 +73,17 @@ _select_items_amend() {
   shift
   local -a items=("$@")
   # PRESELECTED passed via global PRESELECTED_FOR_AMEND to avoid namerefs (bash 3.2)
-  local -a pre=("${PRESELECTED_FOR_AMEND[@]+"${PRESELECTED_FOR_AMEND[@]}"}")
+  # Keep only registrations represented by this picker. A stale entry (for
+  # example OPENCODE_APPS_DIR itself) is not a valid selection; carrying it
+  # through would bypass discovery and can corrupt reconstructed paths.
+  local -a previous=("${PRESELECTED_FOR_AMEND[@]+"${PRESELECTED_FOR_AMEND[@]}"}")
+  local -a pre=()
+  local existing
+  for existing in ${previous[@]+"${previous[@]}"}; do
+    if _item_in_list "$existing" "${items[@]}"; then
+      pre+=("$existing")
+    fi
+  done
 
   echo "$header" >&2
   echo "  Re-run: choose the desired project set (not only new ones)." >&2
