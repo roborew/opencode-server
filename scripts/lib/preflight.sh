@@ -259,12 +259,16 @@ check_opencode_health() {
     return
   fi
   load_env 2>/dev/null || return
-  local health version code port attempt
+  local health version code port deadline
   port="${OPENCODE_PUBLISH_PORT:-4097}"
   port="${port##*:}"
 
-  # Readiness can lag right after recreate (entrypoint + serve + bridge).
-  for attempt in {1..20}; do
+  # Readiness can lag right after recreate (entrypoint ownership pass, Infisical
+  # fetch, serve, bridge). Wait against a wall-clock deadline rather than a
+  # fixed attempt count — a cold start can take minutes on a slow disk, and a
+  # premature `fail` here aborts `setup.sh` with exit 1.
+  deadline=$(( SECONDS + ${OPENCODE_READY_TIMEOUT:-180} ))
+  while (( SECONDS < deadline )); do
     if health="$(api_get "/api/info" 2>/dev/null)"; then
       if command -v python3 >/dev/null 2>&1; then
         version="$(echo "$health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('version','?'))" 2>/dev/null || echo '?')"
@@ -338,7 +342,8 @@ check_opencode_health() {
     return
   fi
   if [[ "$code" == "000" ]]; then
-    preflight_record fail "OpenCode not reachable on :${port}" "wait for startup; docker logs opencode-server"
+    preflight_record fail "OpenCode not reachable on :${port} after ${OPENCODE_READY_TIMEOUT:-180}s" \
+      "wait for startup and re-run, or raise OPENCODE_READY_TIMEOUT; docker logs opencode-server"
     return
   fi
   preflight_record fail "OpenCode health check failed (HTTP ${code})" "check logs: docker logs opencode-server"
