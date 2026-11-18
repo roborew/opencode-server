@@ -196,11 +196,12 @@ sandbox destroy --id blockshed   # unexpose first
 
 OpenCode server Infisical (`infisical run` in the entrypoint) does **not** inject secrets into Sysbox sibling builds. Each app repo needs its own **`.env`** on the mounted path (visible inside the sibling).
 
-Setup **never auto-creates a placeholder `.env`** — a file with all `KEY=` empty values looks like a config but isn't, and has been a source of confusion. The flow is opt-in:
+Setup **never auto-creates a placeholder `.env`** — a file with all `KEY=` empty values looks like a config but isn't, and has been a source of confusion. The flow is opt-in, and it only prompts for eligible repos (not `OPENCODE_REPO_ENV_SKIP` matches) when the sandbox checks actually run and both stdin and stdout are a TTY:
 
-- If `.env` is **missing** → setup asks whether to add environment variables. Enter defaults to **skip**, prints the manual target path, and lets the rest of setup finish. Answer `y` to paste Infisical + repo vars, then end the paste with a line containing only `.`.
+- If `.env` is **missing** → setup asks whether to add environment variables. Enter defaults to **skip**, prints the manual target path, and lets the rest of setup finish. Answer `y` to paste Infisical + repo vars, then end the paste with a line containing only `.` (Ctrl-D also ends it).
 - If `.env` **exists but its required Infisical keys are empty** → the same optional prompt; paste the real values in.
 - If `.env` is **complete** (all required keys have non-empty values) → no action.
+- Without an interactive terminal (`--yes`, CI, piped input) setup never prompts: it prints the target path to create manually and continues.
 - Skipped or incomplete files do not block project registration, but sandbox Compose builds will fail until the required values are added manually.
 
 By default, basename globs in `OPENCODE_REPO_ENV_SKIP` (default `*-spec`) are **not** checked — product spec hubs usually have no sandbox build. Set `OPENCODE_REPO_ENV_SKIP=` (empty) to include every repo, or add more globs (`*-spec,*-docs`).
@@ -209,8 +210,9 @@ Preflight only runs this check when sandbox is enabled (`OPENCODE_SANDBOX_ENABLE
 
 ```bash
 ./scripts/setup.sh projects local
-# … for each repo: Enter skips, or answer y then paste KEY=value lines.
-# End a paste with a line containing only: .
+# Interactive TTY, sandbox enabled: for each eligible repo Enter skips or y
+# starts a paste. End the paste with a line containing only: .
+# --yes / non-interactive: no prompt — create the printed .env path yourself.
 ```
 
 ## Phase summary
