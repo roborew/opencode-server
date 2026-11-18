@@ -30,6 +30,7 @@ run_preflight() {
   check_fqdn_local
   check_workspace_mount
   check_worktree_mount
+  check_workspace_root_ownership
   check_repo_ownership
   check_repo_envs
   check_opencode_data_volume
@@ -439,6 +440,37 @@ check_workspace_mount() {
     preflight_record fail "workspace mount missing at ${WORKSPACE_ROOT}" \
       "check OPENCODE_APPS_DIR in Infisical matches a real host path"
   fi
+}
+
+# Docker creates a missing bind-mount source as root:root. After the workspace
+# dir is deleted (or on a fresh host path) the next `compose up` recreates it as
+# root, so clones/`touch` fail with `Permission denied` for both the host user
+# and the dropped runtime uid. check_repo_ownership only scans children of
+# WORKSPACE_ROOT, so this case needs its own check.
+check_workspace_root_ownership() {
+  resolve_runtime_paths
+  if [[ -z "${WORKSPACE_ROOT:-}" || ! -d "$WORKSPACE_ROOT" ]]; then
+    return
+  fi
+  local current_uid current_gid
+  current_uid="$(id -u)"
+  current_gid="$(id -g)"
+  if [[ -w "$WORKSPACE_ROOT" ]]; then
+    preflight_record ok "workspace root writable as $(id -un)"
+    return
+  fi
+  # Repair through the container's root user: the same inode is bind-mounted,
+  # so no sudo prompt is needed. Deliberately non-recursive — existing repos
+  # keep their own ownership.
+  if container_running \
+    && docker_exec chown "${current_uid}:${current_gid}" "$WORKSPACE_ROOT" 2>/dev/null \
+    && [[ -w "$WORKSPACE_ROOT" ]]; then
+    preflight_record ok "workspace root ownership repaired (uid ${current_uid}:${current_gid})"
+    return
+  fi
+  preflight_record fail \
+    "workspace root ${WORKSPACE_ROOT} not writable by $(id -un)" \
+    "sudo chown ${current_uid}:${current_gid} \"${WORKSPACE_ROOT}\"  # Docker creates missing bind sources as root"
 }
 
 check_opencode_data_volume() {
