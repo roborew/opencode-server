@@ -93,8 +93,40 @@ test_main_is_the_default_work_branch() {
   local logged
   logged="$(cat "$calls")"
   assert_contains "$logged" "gh repo clone example-org/example /home/robin/apps/example" || return 1
+  assert_contains "$logged" "--no-checkout" || return 1
   assert_not_contains "$logged" " -b " || return 1
   assert_not_contains "$logged" "develop" || return 1
+}
+
+test_fresh_clone_populates_the_worktree() {
+  export SETUP_TEST_NO_MAIN=1
+  # shellcheck source=../scripts/setup.sh
+  source "${REPO_ROOT}/scripts/setup.sh"
+  unset OPENCODE_WORK_BRANCH
+  OPENCODE_UID=1000
+  OPENCODE_GID=1000
+  local calls="${TMP_ROOT}/fresh-clone-calls"
+  : >"$calls"
+  # `--no-checkout` leaves HEAD on the remote default with an empty index, so
+  # `branch --show-current` already says main and only an explicit checkout
+  # populates the worktree.
+  docker_exec_git() {
+    shift
+    printf '%s\n' "$*" >>"$calls"
+    case "$*" in
+      "rev-parse --is-inside-work-tree") return 0 ;;
+      "fetch --prune origin") return 0 ;;
+      "show-ref --verify --quiet refs/remotes/origin/main") return 0 ;;
+      "branch --show-current") echo "main"; return 0 ;;
+      "checkout -f main") return 0 ;;
+      "merge --ff-only origin/main") return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  local output
+  output="$(ensure_work_branch "/home/robin/apps/example" 1 2>&1)" || return 1
+  assert_contains "$output" "on main" || return 1
+  assert_contains "$(cat "$calls")" "checkout -f main" || return 1
 }
 
 test_registration_resolves_location_before_creating_a_session() {
@@ -123,6 +155,7 @@ test_registration_resolves_location_before_creating_a_session() {
   }
   api_post() {
     [[ "$1" == "/api/session" ]] || return 1
+    [[ -f "$RESOLVED_MARKER" ]] || { echo "api_post ran before location resolution" >&2; return 1; }
     printf '{"data":{"id":"ses_1","location":{"directory":"%s"}}}\n' "$target"
   }
   local output
@@ -136,10 +169,22 @@ test_registration_rejects_a_session_created_in_the_parent_directory() {
   source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
   WORKSPACE_ROOT="/home/robin/apps"
   local target="/home/robin/apps/example"
-  list_projects_json() { echo '[]'; }
+  local location_marker="${TMP_ROOT}/mismatch-resolved"
+  local deleted_sessions="${TMP_ROOT}/mismatch-deleted"
+  rm -f "$location_marker" "$deleted_sessions"
+  # Before resolution the target is absent; after it the target *is* registered,
+  # so the only reason registration can fail is the session-directory check.
+  list_projects_json() {
+    if [[ -f "$location_marker" ]]; then
+      printf '[{"canonical":"%s"}]\n' "$target"
+    else
+      echo '[]'
+    fi
+  }
   api_get() {
     case "$1" in
       /api/location\?location%5Bdirectory%5D=*)
+        : >"$location_marker"
         printf '{"directory":"%s","project":{"id":"project-1","canonical":"%s"}}\n' "$target" "$target"
         return 0
         ;;
@@ -149,10 +194,18 @@ test_registration_rejects_a_session_created_in_the_parent_directory() {
   api_post() {
     printf '{"data":{"id":"ses_1","location":{"directory":"/home/robin/apps"}}}\n'
   }
-  if register_project "$target" "example" >/dev/null 2>&1; then
+  api_delete() {
+    printf '%s\n' "$1" >>"$deleted_sessions"
+    return 0
+  }
+  local output
+  if output="$(register_project "$target" "example" 2>&1)"; then
     fail "registration succeeded even though the session landed in OPENCODE_APPS_DIR"
     return 1
   fi
+  assert_contains "$output" "seed session landed in /home/robin/apps instead of ${target}" || return 1
+  # The misplaced session must be deleted, and only that one.
+  assert_contains "$(cat "$deleted_sessions" 2>/dev/null || true)" "/api/session/ses_1" || return 1
 }
 
 test_archive_marks_only_the_selected_project_in_sqlite() {
@@ -184,15 +237,50 @@ test_deregistration_archives_the_project_as_well_as_deleting_sessions() {
   # shellcheck source=../scripts/lib/opencode-api.sh
   source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
   WORKSPACE_ROOT="/home/robin/apps"
+  local deleted="${TMP_ROOT}/sessions-deleted"
   local archived="${TMP_ROOT}/project-archived"
-  rm -f "$archived"
+  rm -f "$deleted" "$archived"
   list_sessions_for_directory() {
     printf '[{"id":"ses_1","location":{"directory":"%s"}}]\n' "$1"
   }
-  api_delete() { return 0; }
-  archive_project() { : >"$archived"; }
+  api_delete() {
+    printf '%s\n' "$1" >>"$deleted"
+    return 0
+  }
+  # Archival must only happen after the expected session was deleted.
+  archive_project() {
+    if [[ "$(cat "$deleted" 2>/dev/null || true)" != *"/api/session/ses_1"* ]]; then
+      echo "archive ran before the session was deleted" >&2
+      return 1
+    fi
+    : >"$archived"
+  }
+  list_projects_json() { echo '[]'; }
   deregister_project "/home/robin/apps/example" >/dev/null || return 1
   assert_file_exists "$archived" || return 1
+}
+
+test_deregistration_refuses_a_non_local_api_host() {
+  # shellcheck source=../scripts/lib/opencode-api.sh
+  source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
+  WORKSPACE_ROOT="/home/robin/apps"
+  local touched="${TMP_ROOT}/remote-host-touched"
+  rm -f "$touched"
+  # --host points elsewhere: deleting sessions there while archiving the local
+  # DB would edit two different servers, so nothing may be touched.
+  OPENCODE_HOST="http://other-server:4097"
+  OPENCODE_PUBLISH_PORT=4097
+  list_sessions_for_directory() { : >"$touched"; echo '[]'; }
+  api_delete() { : >"$touched"; return 0; }
+  archive_project() { : >"$touched"; return 0; }
+  docker_exec() { : >"$touched"; return 0; }
+  local output
+  if output="$(deregister_project "/home/robin/apps/example" 2>&1)"; then
+    fail "deregistration succeeded against a non-local --host"
+    return 1
+  fi
+  assert_contains "$output" "refusing to delete sessions or archive projects" || return 1
+  assert_file_missing "$touched" || return 1
 }
 
 test_repo_env_defaults_to_skip_without_blocking_setup() {
@@ -225,6 +313,19 @@ test_repo_env_allows_an_explicit_paste() {
   assert_file_exists "$pasted" || return 1
 }
 
+test_repo_env_paste_accepts_a_crlf_terminator() {
+  # shellcheck source=../scripts/lib/repo-env.sh
+  source "${REPO_ROOT}/scripts/lib/repo-env.sh"
+  local target="${TMP_ROOT}/env-paste-crlf"
+  rm -f "$target"
+  printf 'EXAMPLE_KEY=value\r\n.\r\n' | read_env_paste_to_file "$target" >/dev/null || return 1
+  assert_file_exists "$target" || return 1
+  local content
+  content="$(cat "$target")"
+  assert_contains "$content" "EXAMPLE_KEY=value" || return 1
+  [[ "$content" != *"."* ]] || { fail "terminator was written into ${target}"; return 1; }
+}
+
 test_repo_env_is_not_requested_when_sandbox_is_off() {
   # shellcheck source=../scripts/lib/repo-env.sh
   source "${REPO_ROOT}/scripts/lib/repo-env.sh"
@@ -244,15 +345,26 @@ test_repo_env_is_not_requested_when_sandbox_is_off() {
 }
 
 run_test "main is the default work branch" test_main_is_the_default_work_branch
+run_test "fresh clone populates the worktree" test_fresh_clone_populates_the_worktree
 run_test "GitHub clones use the remote default branch" test_github_clone_uses_the_remote_default_branch
 run_test "registration resolves the v2 location first" test_registration_resolves_location_before_creating_a_session
 run_test "registration rejects parent-directory sessions" test_registration_rejects_a_session_created_in_the_parent_directory
 run_test "archive updates only the selected SQLite project" test_archive_marks_only_the_selected_project_in_sqlite
 run_test "deregistration archives the project" test_deregistration_archives_the_project_as_well_as_deleting_sessions
+run_test "deregistration refuses a non-local API host" test_deregistration_refuses_a_non_local_api_host
 run_test "repo env paste defaults to skip" test_repo_env_defaults_to_skip_without_blocking_setup
 run_test "repo env paste remains available explicitly" test_repo_env_allows_an_explicit_paste
+run_test "repo env paste accepts a CRLF terminator" test_repo_env_paste_accepts_a_crlf_terminator
 run_test "sandbox-off setup does not request repo env files" test_repo_env_is_not_requested_when_sandbox_is_off
 
 echo
 printf 'Result: %d passed, %d failed\n' "$PASS" "$FAIL"
+if (( PASS + FAIL == 0 )); then
+  if [[ -n "${TEST_FILTER:-}" ]]; then
+    echo "No tests matched TEST_FILTER='${TEST_FILTER}'." >&2
+  else
+    echo "No tests ran." >&2
+  fi
+  exit 1
+fi
 (( FAIL == 0 ))
