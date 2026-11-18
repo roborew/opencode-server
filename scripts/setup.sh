@@ -170,6 +170,12 @@ prompt_desired_local_set() {
   DESIRED_DIRS=()
   local rel
   for rel in ${SELECTED_ITEMS[@]+"${SELECTED_ITEMS[@]}"}; do
+    # Picker values are workspace-relative. Never prepend the workspace to an
+    # absolute value: stale registrations must not produce doubled paths.
+    if [[ -z "$rel" || "$rel" = /* ]]; then
+      echo "  ignoring invalid absolute project selection: ${rel:-<empty>}" >&2
+      continue
+    fi
     DESIRED_DIRS+=("${WORKSPACE_ROOT}/${rel}")
   done
 }
