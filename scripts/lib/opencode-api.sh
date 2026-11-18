@@ -175,15 +175,23 @@ opencode_auth() {
 
 api_get() {
   local path="$1"
+  local timeout="${2:-}"
   local base
+  local -a limits=(--connect-timeout 2)
+  if [[ -n "$timeout" ]]; then
+    limits+=(--max-time "$timeout")
+  fi
   base="$(opencode_base_url)"
-  curl -sf -u "$(opencode_auth)" "${base}${path}"
+  curl -sf -u "$(opencode_auth)" "${limits[@]}" "${base}${path}"
 }
 
 api_post() {
   local path="$1"
-  local body="${2:-{}}"
+  local body="${2:-}"
   local extra_header="${3:-}"
+  if [[ -z "$body" ]]; then
+    body='{}'
+  fi
   local base
   base="$(opencode_base_url)"
   if [[ -n "$extra_header" ]]; then

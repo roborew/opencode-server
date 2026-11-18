@@ -30,8 +30,8 @@ run_preflight() {
   check_fqdn_local
   check_workspace_mount
   check_worktree_mount
-  check_workspace_root_ownership
   check_repo_ownership
+  check_workspace_root_ownership
   check_repo_envs
   check_opencode_data_volume
   check_milvus
@@ -255,12 +255,61 @@ check_container() {
   fi
 }
 
+# Validate the readiness budget before Bash arithmetic interprets a leading zero
+# as octal (090 is invalid, 010 means eight seconds).
+_ready_timeout_seconds() {
+  local raw="${OPENCODE_READY_TIMEOUT:-180}"
+  [[ -z "$raw" ]] && raw=180
+  if [[ ! "$raw" =~ ^[0-9]+$ ]]; then
+    preflight_record fail \
+      "OPENCODE_READY_TIMEOUT must be a positive decimal integer (got '${raw}')" \
+      "set OPENCODE_READY_TIMEOUT=180 or another value from 1 to 86400"
+    return 1
+  fi
+  local seconds=$((10#$raw))
+  if (( seconds < 1 || seconds > 86400 )); then
+    preflight_record fail \
+      "OPENCODE_READY_TIMEOUT must be between 1 and 86400 seconds (got '${raw}')" \
+      "set OPENCODE_READY_TIMEOUT=180 or another value from 1 to 86400"
+    return 1
+  fi
+  echo "$seconds"
+}
+
+# Keep each network request short enough that it cannot outlive the readiness
+# deadline. Five seconds is enough for a local API probe on a cold container.
+_readiness_probe_timeout() {
+  local deadline="$1" remaining
+  remaining=$((deadline - SECONDS))
+  (( remaining < 1 )) && remaining=1
+  (( remaining > 5 )) && remaining=5
+  echo "$remaining"
+}
+
+# Run a command with a wall-clock limit on hosts that have neither GNU timeout
+# nor a portable setsid. Used only for the optional Infisical fallback.
+_run_with_timeout() {
+  local seconds="$1"
+  shift
+  python3 - "$seconds" "$@" <<'PY'
+import subprocess, sys
+
+try:
+    result = subprocess.run(sys.argv[2:], timeout=float(sys.argv[1]), capture_output=True)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+sys.stdout.buffer.write(result.stdout)
+sys.stderr.buffer.write(result.stderr)
+sys.exit(result.returncode)
+PY
+}
+
 check_opencode_health() {
   if ! container_running; then
     return
   fi
   load_env 2>/dev/null || return
-  local health version code port deadline
+  local health version code port ready_timeout deadline deadline_reached=0 probe_timeout
   port="${OPENCODE_PUBLISH_PORT:-4097}"
   port="${port##*:}"
 
@@ -268,9 +317,13 @@ check_opencode_health() {
   # fetch, serve, bridge). Wait against a wall-clock deadline rather than a
   # fixed attempt count — a cold start can take minutes on a slow disk, and a
   # premature `fail` here aborts `setup.sh` with exit 1.
-  deadline=$(( SECONDS + ${OPENCODE_READY_TIMEOUT:-180} ))
+  if ! ready_timeout="$(_ready_timeout_seconds)"; then
+    return
+  fi
+  deadline=$(( SECONDS + ready_timeout ))
   while (( SECONDS < deadline )); do
-    if health="$(api_get "/api/info" 2>/dev/null)"; then
+    probe_timeout="$(_readiness_probe_timeout "$deadline")"
+    if health="$(api_get "/api/info" "$probe_timeout" 2>/dev/null)"; then
       if command -v python3 >/dev/null 2>&1; then
         version="$(echo "$health" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('version','?'))" 2>/dev/null || echo '?')"
       else
@@ -279,21 +332,27 @@ check_opencode_health() {
       preflight_record ok "opencode-server healthy (v${version})"
       return
     fi
-    code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/api/info" 2>/dev/null || true)"
+    code="$(curl -s -o /dev/null -w '%{http_code}' \
+      --connect-timeout 2 --max-time "$probe_timeout" \
+      "http://127.0.0.1:${port}/api/info" 2>/dev/null || true)"
     code="${code:-000}"
+    # A 401 proves the guard reached the upstream; all other statuses (000,
+    # 503, etc.) can still be part of startup and must keep polling.
     if [[ "$code" == "401" ]]; then
-      break
-    fi
-    if [[ "$code" != "000" ]]; then
       break
     fi
     sleep 2
   done
+  if (( SECONDS >= deadline )); then
+    deadline_reached=1
+  fi
 
   # Host .env password often missing/wrong when secrets live in Infisical.
   # Retry the authenticated check with Infisical-injected env when configured.
-  if [[ -n "${INFISICAL_PROJECT_ID:-}" && -n "${INFISICAL_CLIENT_ID:-}${INFISICAL_TOKEN:-}" ]] \
+  if (( SECONDS < deadline )) \
+    && [[ -n "${INFISICAL_PROJECT_ID:-}" && -n "${INFISICAL_CLIENT_ID:-}${INFISICAL_TOKEN:-}" ]] \
     && command -v infisical >/dev/null 2>&1; then
+    probe_timeout="$(_readiness_probe_timeout "$deadline")"
     local domain token client_id client_secret
     domain="${INFISICAL_DOMAIN:-${INFISICAL_API_URL:-}}"
     token="${INFISICAL_TOKEN:-}"
@@ -302,7 +361,8 @@ check_opencode_health() {
       client_secret="${INFISICAL_CLIENT_SECRET:-}"
       if [[ -n "$client_id" && -n "$client_secret" && -n "$domain" ]]; then
         token="$(
-          infisical login \
+          _run_with_timeout "$probe_timeout" \
+            infisical login \
             --method=universal-auth \
             --client-id="$client_id" \
             --client-secret="$client_secret" \
@@ -313,13 +373,15 @@ check_opencode_health() {
       fi
     fi
     if [[ -n "$token" && -n "$domain" ]]; then
+      probe_timeout="$(_readiness_probe_timeout "$deadline")"
       health="$(
-        infisical run \
+        _run_with_timeout "$probe_timeout" \
+          infisical run \
           --projectId="$INFISICAL_PROJECT_ID" \
           --env="${INFISICAL_ENV:-dev}" \
           --domain="$domain" \
           --token="$token" \
-          -- sh -c "curl -sf -u \"opencode:\${OPENCODE_SERVER_PASSWORD}\" \"http://127.0.0.1:${port}/api/info\"" \
+          -- sh -c "curl -sf --connect-timeout 2 --max-time ${probe_timeout} -u \"opencode:\${OPENCODE_SERVER_PASSWORD}\" \"http://127.0.0.1:${port}/api/info\"" \
           2>/dev/null
       )" || health=""
       if [[ -n "$health" ]]; then
@@ -334,7 +396,9 @@ check_opencode_health() {
     fi
   fi
 
-  code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/api/info" 2>/dev/null || true)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' \
+    --connect-timeout 2 --max-time "$(_readiness_probe_timeout "$deadline")" \
+    "http://127.0.0.1:${port}/api/info" 2>/dev/null || true)"
   code="${code:-000}"
   if [[ "$code" == "401" ]]; then
     preflight_record warn \
@@ -343,11 +407,22 @@ check_opencode_health() {
     return
   fi
   if [[ "$code" == "000" ]]; then
-    preflight_record fail "OpenCode not reachable on :${port} after ${OPENCODE_READY_TIMEOUT:-180}s" \
-      "wait for startup and re-run, or raise OPENCODE_READY_TIMEOUT; docker logs opencode-server"
+    if (( deadline_reached )); then
+      preflight_record fail "OpenCode not reachable on :${port} after ${ready_timeout}s" \
+        "wait for startup and re-run, or raise OPENCODE_READY_TIMEOUT; docker logs opencode-server"
+    else
+      preflight_record fail "OpenCode stopped responding on :${port} before readiness completed" \
+        "check docker logs opencode-server; re-run preflight once the endpoint responds"
+    fi
     return
   fi
-  preflight_record fail "OpenCode health check failed (HTTP ${code})" "check logs: docker logs opencode-server"
+  if (( deadline_reached )); then
+    preflight_record fail "OpenCode health check failed (HTTP ${code}) after ${ready_timeout}s" \
+      "check logs: docker logs opencode-server"
+  else
+    preflight_record fail "OpenCode health check failed (HTTP ${code})" \
+      "check logs: docker logs opencode-server"
+  fi
 }
 
 # Confirm OPENCODE_FQDN resolves on the Docker host and serves health (same URL as Twingate).
@@ -432,6 +507,14 @@ check_workspace_mount() {
       "set in Infisical (or host .env) and recreate: ./scripts/compose.sh up -d --force-recreate opencode"
     return
   fi
+  # Same-path bind: if the host directory is absent, Docker creates it as root
+  # on the next `up` (or the stale container mounts something else entirely), so
+  # warn here instead of failing later on a mysteriously empty workspace.
+  if [[ ! -d "$WORKSPACE_ROOT" ]]; then
+    preflight_record fail "OPENCODE_APPS_DIR ${WORKSPACE_ROOT} does not exist on the host" \
+      "mkdir -p \"${WORKSPACE_ROOT}\"   # then re-run ./scripts/setup.sh projects local (or fix OPENCODE_APPS_DIR in Infisical)"
+    return
+  fi
   if docker_exec test -d "$WORKSPACE_ROOT" 2>/dev/null; then
     local count
     count="$(docker_exec sh -c "ls -1 '${WORKSPACE_ROOT}' 2>/dev/null | wc -l" | tr -d ' ')"
@@ -442,35 +525,76 @@ check_workspace_mount() {
   fi
 }
 
+# Read and search access are both required: a directory can be writable but
+# unusable for opening entries when its execute bit is missing.
+_workspace_path_accessible() {
+  local path="$1"
+  [[ -w "$path" && -x "$path" ]]
+}
+
+# Return the host source bind-mounted at WORKSPACE_ROOT in the running
+# container. Empty means the bind is absent or could not be inspected.
+_workspace_bind_source() {
+  docker inspect "$CONTAINER_NAME" --format '{{json .Mounts}}' 2>/dev/null | python3 -c '
+import json, sys
+target = sys.argv[1].rstrip("/")
+for mount in json.load(sys.stdin):
+    if (mount.get("Destination") or "").rstrip("/") == target:
+        print((mount.get("Source") or "").rstrip("/"))
+        break
+' "$WORKSPACE_ROOT"
+}
+
 # Docker creates a missing bind-mount source as root:root. After the workspace
 # dir is deleted (or on a fresh host path) the next `compose up` recreates it as
 # root, so clones/`touch` fail with `Permission denied` for both the host user
 # and the dropped runtime uid. check_repo_ownership only scans children of
-# WORKSPACE_ROOT, so this case needs its own check.
+# WORKSPACE_ROOT, so an empty workspace needs this root-level check.
 check_workspace_root_ownership() {
   resolve_runtime_paths
   if [[ -z "${WORKSPACE_ROOT:-}" || ! -d "$WORKSPACE_ROOT" ]]; then
     return
   fi
-  local current_uid current_gid
+  local current_uid current_gid owner_uid bind_source hint
   current_uid="$(id -u)"
   current_gid="$(id -g)"
-  if [[ -w "$WORKSPACE_ROOT" ]]; then
-    preflight_record ok "workspace root writable as $(id -un)"
+  if _workspace_path_accessible "$WORKSPACE_ROOT"; then
+    preflight_record ok "workspace root writable and searchable as $(id -un)"
     return
   fi
-  # Repair through the container's root user: the same inode is bind-mounted,
-  # so no sudo prompt is needed. Deliberately non-recursive — existing repos
-  # keep their own ownership.
-  if container_running \
-    && docker_exec chown "${current_uid}:${current_gid}" "$WORKSPACE_ROOT" 2>/dev/null \
-    && [[ -w "$WORKSPACE_ROOT" ]]; then
-    preflight_record ok "workspace root ownership repaired (uid ${current_uid}:${current_gid})"
+  if [[ "${PREFLIGHT_FIX_OWNERSHIP}" != "1" ]]; then
+    preflight_record fail \
+      "workspace root ${WORKSPACE_ROOT} lacks write/search access for $(id -un)" \
+      "automatic ownership repair is disabled (PREFLIGHT_FIX_OWNERSHIP=0); fix permissions manually"
     return
+  fi
+  # Repair through the container's root user only when the running container
+  # actually mounts this host path. A stale container may expose an unrelated
+  # directory at the same in-container path after OPENCODE_APPS_DIR changes.
+  if container_running; then
+    bind_source="$(_workspace_bind_source || true)"
+    if [[ -z "$bind_source" || "$bind_source" != "$WORKSPACE_ROOT" ]]; then
+      preflight_record fail \
+        "workspace bind source '${bind_source:-not found}' does not match ${WORKSPACE_ROOT}" \
+        "recreate the container after changing OPENCODE_APPS_DIR: ./scripts/compose.sh up -d --force-recreate opencode"
+      return
+    fi
+    # Deliberately non-recursive — existing repos keep their own ownership.
+    docker_exec chown "${current_uid}:${current_gid}" "$WORKSPACE_ROOT" 2>/dev/null || true
+    if _workspace_path_accessible "$WORKSPACE_ROOT"; then
+      preflight_record ok "workspace root ownership repaired (uid ${current_uid}:${current_gid})"
+      return
+    fi
+  fi
+  owner_uid="$(stat -c '%u' "$WORKSPACE_ROOT" 2>/dev/null || echo '?')"
+  if [[ "$owner_uid" == "$current_uid" ]]; then
+    hint="chmod u+rwx \"${WORKSPACE_ROOT}\"  # owner matches but search access is missing"
+  else
+    hint="sudo chown ${current_uid}:${current_gid} \"${WORKSPACE_ROOT}\"  # Docker creates missing bind sources as root"
   fi
   preflight_record fail \
-    "workspace root ${WORKSPACE_ROOT} not writable by $(id -un)" \
-    "sudo chown ${current_uid}:${current_gid} \"${WORKSPACE_ROOT}\"  # Docker creates missing bind sources as root"
+    "workspace root ${WORKSPACE_ROOT} lacks write/search access for $(id -un)" \
+    "$hint"
 }
 
 check_opencode_data_volume() {
@@ -492,6 +616,8 @@ check_opencode_data_volume() {
 # when creating per-repo .env files. Most common cause is a repo dir owned by
 # a different user (often root) inside an otherwise robin-owned workspace.
 # In interactive mode we offer to `sudo chown -R` to the current user.
+# PREFLIGHT_FIX_OWNERSHIP=0 disables every automatic ownership repair, including
+# the non-recursive root chown through the container and this recursive sudo offer.
 PREFLIGHT_FIX_OWNERSHIP="${PREFLIGHT_FIX_OWNERSHIP:-1}"
 
 check_repo_ownership() {
@@ -548,9 +674,10 @@ check_repo_ownership() {
     "sudo chown -R \"$(id -un):$(id -gn)\" \"$WORKSPACE_ROOT\""
 }
 
-# Offer to chown WORKSPACE_ROOT to the current user via sudo. Returns 0 if a
-# chown actually ran (and succeeded), 1 if the user declined / sudo missing /
-# chown failed. Set PREFLIGHT_FIX_OWNERSHIP=0 to skip the offer entirely.
+# Offer to recursively chown WORKSPACE_ROOT to the current user via sudo.
+# Returns 0 if a chown actually ran (and succeeded), 1 if the user declined /
+# sudo missing / chown failed. PREFLIGHT_FIX_OWNERSHIP=0 disables all automatic
+# ownership repairs, not only this recursive offer.
 try_fix_workspace_ownership() {
   local root="$1"
   shift
