@@ -15,15 +15,18 @@ if [[ "$(id -u)" -eq 0 ]]; then
   # (`chown -R opencode:opencode /home/opencode` in the Dockerfile), so only
   # recurse when a mismatch actually exists.
   tree_needs_chown() {
-    local path="$1"
+    local path="$1" output
     [[ -e "$path" ]] || return 1
-    if [[ -n "$(
+    if ! output="$(
       find "$path" \( ! -user "${OPENCODE_UID}" -o ! -group "${OPENCODE_GID}" \) \
-        -print -quit 2>/dev/null || true
-    )" ]]; then
+        -print -quit 2>/dev/null
+    )"; then
+      # A failed scan is not proof that ownership is correct. Preserve the
+      # repair attempt rather than dropping privileges on an unreadable tree.
+      echo "opencode-entrypoint: ownership scan failed for ${path}; attempting repair" >&2
       return 0
     fi
-    return 1
+    [[ -n "$output" ]]
   }
 
   fix_as_root() {

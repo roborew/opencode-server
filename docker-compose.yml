@@ -21,8 +21,9 @@ services:
       interval: 30s
       timeout: 10s
       # Cold starts (entrypoint ownership pass + Infisical fetch + serve) can take
-      # a couple of minutes on slow disks; probing earlier just marks the
-      # container unhealthy while it is still initialising.
+      # a couple of minutes on slow disks. Docker may probe during this grace
+      # period, but failed probes do not count toward retries until the first
+      # successful probe.
       start_period: 180s
       retries: 3
     # Entrypoint starts as root, chowns volumes, then drops to OPENCODE_UID:GID
