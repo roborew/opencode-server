@@ -6,7 +6,7 @@ After `docker compose up`, run [`scripts/setup.sh`](../scripts/setup.sh). It nev
 
 1. **Sandbox** — auto. If `OPENCODE_SANDBOX_MODE=auto|on` (from Infisical or host `.env`), setup probes the host for Sysbox, builds the opencode image and sibling image, and recreates the stack with the `docker-compose.sandbox.yml` overlay. Re-runs skip when the stack is already enabled. Set `OPENCODE_SANDBOX_SKIP_AUTO_BUILD=1` to opt out. No extra build steps for the operator — see [docs/sandbox.md](sandbox.md) for the one-time Sysbox install on the host.
 2. **Preflight** — env, container health, workspace mount, Milvus, `gh` auth, providers, enabled MCPs
-3. **Projects (amend)** — choose the desired set (re-runs show `[on]`/`[off]`); register adds, deregister removes sessions for dropped repos
+3. **Projects (amend)** — choose the desired set (re-runs show `[on]`/`[off]`); resolve and verify adds, archive drops and delete their sessions. Per-repo sandbox `.env` setup is optional and defaults to skip
 4. **Host bootstrap** — `/etc/hosts` for `OPENCODE_FQDN`, delete stray `/Users/...` sessions on the server, print web deep links
 
 ```bash
@@ -24,11 +24,11 @@ Flags: `--force` (continue after preflight failures), `--dry-run`, `--host URL`,
 
 ## Project modes
 
-**Local** — one same-path mount exposes all nested repos; no per-repo volume mounts. The script finds `.git` roots under `$OPENCODE_APPS_DIR`, ensures each selected repo is on `OPENCODE_WORK_BRANCH` (default `develop`) when that remote branch exists, and registers each selected path (e.g. `/Users/you/projects/my-app/my-app-web`).
+**Local** — one same-path mount exposes all nested repos; no per-repo volume mounts. The script finds `.git` roots under `$OPENCODE_APPS_DIR`, ensures each selected repo is on `OPENCODE_WORK_BRANCH` (default `main`) when that remote branch exists, and registers each selected path (e.g. `/Users/you/projects/my-app/my-app-web`). Setup is trunk-based by default and does not probe `develop`.
 
-**GitHub** — requires `GH_TOKEN` + `GH_ORG`. Lists org repos, you pick which to keep/clone into flat `$OPENCODE_APPS_DIR/<repo>` (cloud: set `OPENCODE_APPS_DIR=/data/opencode/apps` on the host so clones persist). After clone/update, checkouts land on `OPENCODE_WORK_BRANCH` when that remote branch exists. Re-run is idempotent: existing dirs get `git fetch` + work-branch checkout; already-registered projects are skipped.
+**GitHub** — requires `GH_TOKEN` + `GH_ORG`. Lists org repos, you pick which to keep/clone into flat `$OPENCODE_APPS_DIR/<repo>` (cloud: set `OPENCODE_APPS_DIR=/data/opencode/apps` on the host so clones persist). Clones start on the remote default branch; after clone/update, checkouts land on `OPENCODE_WORK_BRANCH` (default `main`) when that remote branch exists. Re-run is idempotent: existing dirs get `git fetch` + work-branch checkout; already-registered projects are skipped.
 
-OpenCode registers **git repository roots**, not parent folders. Setup treats your selection as the full desired set: missing repos get a seed session; removed ones have their sessions deleted (there is no separate project-delete API). Workspaces remain a separate, optional choice in any client UI.
+OpenCode registers **git repository roots**, not the `$OPENCODE_APPS_DIR` parent folder. Setup resolves each selected location through the v2 API, creates a seed session, and verifies both the session directory and resulting project. Removed projects are archived in OpenCode's on-volume DB and their sessions are deleted (v2 has no project-delete/archive API); selecting the location again unarchives it. Workspaces remain a separate, optional choice in any client UI.
 
 ## Project workspace
 

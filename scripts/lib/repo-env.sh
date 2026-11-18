@@ -159,10 +159,9 @@ can_paste_interactively() {
 }
 
 # Ensure .env for one repo. When the file is missing or its required Infisical
-# keys are empty, prompt the user to paste the values in (never auto-create a
-# placeholder). In non-interactive mode (--yes, no TTY, non-writable repo) the
-# script reports and leaves the repo alone — the user can fill .env manually
-# or re-run interactively.
+# keys are empty, offer an explicit paste flow (never auto-create a placeholder).
+# Enter skips by default so project setup always reaches bootstrap. Non-interactive
+# mode also leaves the repo alone with a manual path for later.
 ensure_repo_env_interactive() {
   local repo="$1"
   local name
@@ -190,6 +189,12 @@ ensure_repo_env_interactive() {
         echo "           non-interactive — paste values manually into ${repo}/.env then re-run setup"
         return 0
       fi
+      local confirm
+      read -r -p "           Add environment variables for ${name} now? [y/N] " confirm
+      if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "           skipped — add manually later: ${repo}/.env (required before sandbox builds)"
+        return 0
+      fi
       echo "           paste Infisical + any other KEY=value lines for this repo."
       echo "           need: INFISICAL_PROJECT_ID, INFISICAL_DOMAIN|API_URL, and TOKEN or CLIENT_ID+SECRET"
       if read_env_paste_to_file "${repo}/.env"; then
@@ -212,8 +217,15 @@ ensure_repos_env() {
   if [[ ${#repos[@]} -eq 0 ]]; then
     return 0
   fi
+  local mode="${OPENCODE_SANDBOX_MODE:-off}"
+  mode="$(echo "$mode" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${OPENCODE_SANDBOX_ENABLED:-0}" != "1" && "$mode" != "on" ]]; then
+    echo
+    echo "Per-repo .env files are not required (sandbox off)."
+    return 0
+  fi
   echo
-  echo "Per-repo .env for sandbox builds (paste required — never auto-created):"
+  echo "Per-repo .env for sandbox builds (optional now; required before sandbox builds):"
   local skip_pat
   skip_pat="$(repo_env_skip_patterns)"
   if [[ -n "$skip_pat" ]]; then

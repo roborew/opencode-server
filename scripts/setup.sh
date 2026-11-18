@@ -24,8 +24,8 @@ Commands:
   (default)           Configure sandbox mode, preflight, then amend projects + bootstrap
   preflight           Run preflight checks only (includes sandbox configure)
   sandbox             Probe/configure Sysbox sandbox mode only (OPENCODE_SANDBOX_MODE)
-  projects local      Amend local OPENCODE_APPS_DIR set; ensure work branch checkout
-  projects github     List GH_ORG repos, clone chosen ones onto work branch, amend set
+  projects local      Amend local OPENCODE_APPS_DIR set; ensure main checkout
+  projects github     List GH_ORG repos, clone chosen ones, ensure main, amend set
   bootstrap           Hosts entry + print open links
 
 Options:
@@ -40,12 +40,12 @@ Options:
   --skip-bootstrap    Skip hosts/deep-links after sync
   -h, --help          Show this help
 
-Local and github modes ensure OPENCODE_WORK_BRANCH (default: develop)
+Local and github modes ensure OPENCODE_WORK_BRANCH (default: main)
 when that remote branch exists (fetch + checkout; no force-reset).
 
 Each projects run (unless --skip-bootstrap):
   1) You choose the desired project set (re-run amends: add/remove)
-  2) Registers missing repos; deregisters removed ones (deletes their sessions)
+  2) Registers missing repos; archives removed ones and deletes their sessions
   3) /etc/hosts → OPENCODE_FQDN (sudo) so the Docker host can use the FQDN
   4) Prints web deep links for each host-path project
      (does not touch OpenCode.app — attach that client later yourself)
@@ -178,7 +178,7 @@ run_projects_local() {
   fi
   load_env || true
 
-  local work_branch="${OPENCODE_WORK_BRANCH:-develop}"
+  local work_branch="${OPENCODE_WORK_BRANCH:-main}"
 
   echo
   echo "Discovering git repos under ${WORKSPACE_ROOT}..."
@@ -200,7 +200,7 @@ run_projects_local() {
   sync_projects ${DESIRED_DIRS[@]+"${DESIRED_DIRS[@]}"}
 }
 
-# After clone/fetch: land on OPENCODE_WORK_BRANCH (default develop) when origin has it.
+# After clone/fetch: land on OPENCODE_WORK_BRANCH (default main) when origin has it.
 # Does not force-reset local work; warns and leaves the current branch if checkout fails.
 # Run as OPENCODE_UID — host binds must be owned by that user (same as serve).
 docker_exec_git() {
@@ -227,7 +227,7 @@ docker_exec_user() {
 
 ensure_work_branch() {
   local dir="$1"
-  local branch="${OPENCODE_WORK_BRANCH:-develop}"
+  local branch="${OPENCODE_WORK_BRANCH:-main}"
   local current remote_ref="refs/remotes/origin/${branch}"
 
   if ! docker_exec_git "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -262,6 +262,13 @@ ensure_work_branch() {
   echo "  on ${branch}"
 }
 
+# Clone with the remote's default branch, then ensure_work_branch moves to main.
+# Avoid probing a legacy develop branch or deleting a partial clone to retry it.
+clone_github_repo() {
+  local org="$1" name="$2" target="$3"
+  docker_exec_user gh repo clone "${org}/${name}" "$target"
+}
+
 run_projects_github() {
   if ! container_running; then
     echo "Container ${CONTAINER_NAME} is not running." >&2
@@ -286,7 +293,7 @@ run_projects_github() {
     exit 1
   fi
 
-  local work_branch="${OPENCODE_WORK_BRANCH:-develop}"
+  local work_branch="${OPENCODE_WORK_BRANCH:-main}"
 
   echo
   echo "Listing repos in org ${GH_ORG}..."
@@ -342,12 +349,7 @@ for r in sorted(data, key=lambda x: x['name'].lower()):
       ensure_work_branch "$target"
     else
       echo "Cloning ${name}..."
-      # Prefer cloning straight onto the work branch when it exists remotely.
-      # If -b fails (missing branch / partial dir), remove and clone default, then ensure.
-      if ! docker_exec_user gh repo clone "${GH_ORG}/${name}" "$target" -- -b "$work_branch" 2>/dev/null; then
-        docker_exec_user rm -rf "$target" 2>/dev/null || true
-        docker_exec_user gh repo clone "${GH_ORG}/${name}" "$target"
-      fi
+      clone_github_repo "$GH_ORG" "$name" "$target"
       ensure_work_branch "$target"
     fi
     desired+=("$target")
@@ -422,7 +424,7 @@ sync_projects() {
         continue
       fi
       if result="$(deregister_project "$d" 2>&1)"; then
-        echo "  removed sessions for ${d}"
+        echo "  archived ${d} and removed its sessions"
         ok_rm=$((ok_rm + 1))
       else
         echo "  failed deregister ${d}: ${result}" >&2
@@ -446,7 +448,7 @@ sync_projects() {
           *)    echo "  ${d}: ${result}" ;;
         esac
       else
-        echo "  failed ${d}" >&2
+        echo "  failed ${d}: ${result}" >&2
         fail_add=$((fail_add + 1))
       fi
     done
@@ -574,4 +576,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${SETUP_TEST_NO_MAIN:-0}" != "1" ]]; then
+  main "$@"
+fi

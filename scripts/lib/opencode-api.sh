@@ -372,6 +372,15 @@ list_projects_json() {
   api_get "/api/project" 2>/dev/null || echo '[]'
 }
 
+# Resolve a directory through v2's location API. Besides validating the path,
+# this persists (and, if necessary, unarchives) its owning project before we
+# create the seed session used by clients.
+resolve_project_location() {
+  local dir="$1" encoded
+  encoded="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1].rstrip("/"), safe=""))' "$dir")"
+  api_get "/api/location?location%5Bdirectory%5D=${encoded}"
+}
+
 project_registered() {
   local dir="$1"
   local host projects
@@ -397,9 +406,44 @@ register_project() {
     echo "skip"
     return 0
   fi
+
+  local resolved response actual
+  if ! resolved="$(resolve_project_location "$dir")"; then
+    echo "could not resolve project location ${dir}" >&2
+    return 1
+  fi
+  if ! actual="$(python3 -c '
+import json, sys
+value = json.loads(sys.argv[1])
+print(value.get("directory") or "")
+' "$resolved")" || [[ "$actual" != "$dir" ]]; then
+    echo "location API resolved ${dir} to unexpected directory ${actual:-<invalid response>}" >&2
+    return 1
+  fi
+
   local body
   body="$(python3 -c 'import json,sys; print(json.dumps({"title": sys.argv[1], "location": {"directory": sys.argv[2]}}))' "$title" "$dir")"
-  api_post "/api/session" "$body" >/dev/null
+  if ! response="$(api_post "/api/session" "$body")"; then
+    echo "could not create seed session in ${dir}" >&2
+    return 1
+  fi
+  if ! actual="$(python3 -c '
+import json, sys
+value = json.loads(sys.argv[1])
+session = value.get("data") or value
+print((session.get("location") or {}).get("directory") or "")
+' "$response")"; then
+    echo "invalid create-session response for ${dir}" >&2
+    return 1
+  fi
+  if [[ "$actual" != "$dir" ]]; then
+    echo "seed session landed in ${actual:-<unknown>} instead of ${dir}" >&2
+    return 1
+  fi
+  if ! project_registered "$dir"; then
+    echo "project ${dir} is still absent from /api/project after registration" >&2
+    return 1
+  fi
   echo "ok"
 }
 
@@ -495,8 +539,31 @@ print(json.dumps(out))
 " "$dir" "$all"
 }
 
-# Remove all sessions for a worktree so it drops out of the active UI set.
-# (OpenCode has no project.delete; sessions are the registration mechanism.)
+# v2 has no project.delete or project.archive endpoint. Archive removed
+# projects in the same on-volume DB used by Project.sweep; /api/project omits
+# archived rows immediately, and resolving the location later unarchives them.
+archive_project() {
+  local dir="$1"
+  local path
+  path="$(to_host_workspace_path "$dir")"
+  docker_exec python3 -c '
+import sqlite3, sys, time
+db_path, directory = sys.argv[1], sys.argv[2].rstrip("/")
+con = sqlite3.connect(db_path, timeout=10)
+con.execute("PRAGMA busy_timeout=10000")
+ids = [row[0] for row in con.execute("SELECT id FROM project WHERE worktree = ?", (directory,))]
+now = time.time_ns() // 1_000_000
+for project_id in ids:
+    con.execute("UPDATE project SET time_archived = ? WHERE id = ?", (now, project_id))
+con.commit()
+con.close()
+print(f"archived {len(ids)} project(s)")
+' "${CONTAINER_XDG_DATA_HOME}/opencode/opencode.db" "$path"
+}
+
+# Delete sessions for a deselected worktree and archive its project. OpenCode
+# persists projects independently of sessions, so deleting sessions alone does
+# not remove the project from clients.
 deregister_project() {
   local dir="$1"
   local path
@@ -531,6 +598,10 @@ for s in json.loads(sys.argv[1] or '[]'):
   fi
 
   if (( fail > 0 )); then
+    echo "fail"
+    return 1
+  fi
+  if ! archive_project "$path"; then
     echo "fail"
     return 1
   fi
