@@ -8,11 +8,11 @@ Set `OPENCODE_SANDBOX_SKIP_AUTO_BUILD=1` to opt out of the auto build/restart an
 
 ## Mode flag
 
-| `OPENCODE_SANDBOX_MODE` | Behavior |
-| ----------------------- | -------- |
-| `off` (default) | Current Mac-safe stack. No socket, no sibling sandboxes. |
-| `auto` | Setup probes for `sysbox-runc`. If present → enable; else warn and stay off. |
-| `on` | Require Sysbox; setup fails if the probe fails. |
+| `OPENCODE_SANDBOX_MODE` | Behavior                                                                     |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `off` (default)         | Current Mac-safe stack. No socket, no sibling sandboxes.                     |
+| `auto`                  | Setup probes for `sysbox-runc`. If present → enable; else warn and stay off. |
+| `on`                    | Require Sysbox; setup fails if the probe fails.                              |
 
 Setup writes `OPENCODE_SANDBOX_ENABLED=0|1` and, when enabling, sets:
 
@@ -132,6 +132,30 @@ docker compose build --no-cache opencode && docker compose up -d opencode
 
 Do not `down -v` (drops sessions).
 
+## Mountpoint preflight (oc-sandbox) — server image requirements
+
+The config repo's `oc-sandbox` plugin (opencode-config-v2) runs a **mountpoint preflight** before every Compose operation (build, up, run/focused tests, generator drift check, gate). In an unprivileged server this matters: the Docker daemon materializes missing host mountpoints as **root** — bind sources that don't exist yet, and, through the bind, the host-side mountpoints of anonymous volumes nested under a bind target (e.g. `./apps/api:/repo/apps/api` plus the anonymous volume `/repo/apps/api/.venv`). Root-owned worktree directories made `slice_finish` unable to remove worktrees, so the preflight:
+
+1. discovers declared profiles (`docker compose config --profiles`) and renders the effective model with `docker compose --profile <all declared profiles> config --format json`,
+2. creates every host path the daemon would create, **as the invoking uid/gid** (before the daemon can create it as root),
+3. verifies existing paths are owned by the invoking uid/gid.
+
+Both commands are purely **client-side** — they never contact a daemon and need neither `docker.sock` nor root. The preflight runs in the OpenCode server process, on the host-side worktree paths, for **both backends** (the worktree is bind-mounted into the Sysbox box at `/work`, but the preflight runs before box creation, on the host paths). The opencode-server image therefore ships the toolchain, pinned:
+
+| Image content           | Pin                                                                          | Consumer                                              |
+| ----------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `docker-ce-cli`         | `29.10.0` (`5:29.10.0-1~ubuntu.24.04~noble`; build arg `DOCKER_CLI_VERSION`) | preflight model render (client-side)                  |
+| `docker-compose-plugin` | `5.8.0` (build arg `DOCKER_COMPOSE_VERSION`)                                 | `docker compose config` / `--profiles`                |
+| `git`                   | Ubuntu 24.04 archive (`2.43.x`, pinned by the `ubuntu:24.04` base)           | preflight's `git ls-files` missing-tracked-file check |
+
+If the CLI were missing, oc-sandbox would block with _"mountpoint preflight cannot render the effective compose model"_ — the model itself is never logged.
+
+**No daemon access, by design.** The server container gets no `docker.sock`, no socket mounts and no extra privileges in `docker-compose.yml`; the blueprint §10 sidecar stays the only container with the socket, and the preflight is never routed through the sidecar's exec allow-list. `tests/image-preflight.sh` asserts this on every run — a regression that grants the `opencode` service a socket or `privileged:` fails the test.
+
+**Ownership invariant.** The preflight only holds while the OpenCode server process runs as the uid/gid that owns the worktree root — the same identity `oc-worktree` creates worktrees with (`OPENCODE_UID`/`OPENCODE_GID`, auto-filled from `id -u`/`id -g` by setup). The entrypoint verifies it at startup ([`docker/assert-worktree-ownership.sh`](../docker/assert-worktree-ownership.sh)) and **fails loudly** on a mismatch, instead of letting every sandbox slice block with foreign-owned mountpoint errors. If a deployment override changes the user, align `OPENCODE_UID`/`OPENCODE_GID` with the worktree owner — the entrypoint never chowns host-owned binds, so a mismatch is a deployment error, not something to paper over.
+
+`tests/image-preflight.sh` builds the Dockerfile's `server-tools` stage and asserts all of the above **as the invoking user inside the container, with no Docker socket** — the render test points `DOCKER_HOST` at a dead endpoint to prove the model render needs no daemon.
+
 ## App compose convention (self-contained)
 
 Feature / production-like test stacks must boot **inside the Sysbox sibling** with everything they need on a private compose network.
@@ -217,7 +241,7 @@ Preflight only runs this check when sandbox is enabled (`OPENCODE_SANDBOX_ENABLE
 
 ## Phase summary
 
-| Build/test | Web review |
-| ---------- | ---------- |
-| Sysbox sibling + self-contained Compose (incl. Caddy) | Localhost publish helper + existing host tunnel |
-| Needs per-repo `.env` (Infisical) | Hostname `{feature}.{apex}`; tunnel public hostname + DNS via MCP |
+| Build/test                                            | Web review                                                        |
+| ----------------------------------------------------- | ----------------------------------------------------------------- |
+| Sysbox sibling + self-contained Compose (incl. Caddy) | Localhost publish helper + existing host tunnel                   |
+| Needs per-repo `.env` (Infisical)                     | Hostname `{feature}.{apex}`; tunnel public hostname + DNS via MCP |

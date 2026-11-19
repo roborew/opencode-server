@@ -248,6 +248,15 @@ fi
 
 export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"
 
+# oc-sandbox (opencode-config-v2) materializes missing host worktree
+# mountpoints as THIS uid/gid before the Docker daemon can create them
+# root-owned. A deployment that silently changes the runtime identity away
+# from the worktree owner would block every sandbox slice with
+# foreign-owned mountpoint errors — fail loudly at startup instead.
+# shellcheck source=/usr/local/bin/assert-worktree-ownership.sh
+source /usr/local/bin/assert-worktree-ownership.sh
+assert_worktree_root_ownership
+
 run_cmd() {
   if [[ $# -ge 2 && "$1" == "opencode" && "$2" == "serve" ]]; then
     exec /usr/local/bin/opencode-serve-guarded.sh "$@"
