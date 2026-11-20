@@ -31,7 +31,9 @@ FAIL=0
 
 fail() {
   echo "    $*" >&2
-  return 1
+  # Each test runs in a subshell (run_test), so exit stops the failed test
+  # without killing the suite — later checks can't mask an earlier failure.
+  exit 1
 }
 
 assert_contains() {
@@ -78,12 +80,18 @@ test_base_compose_grants_no_daemon_access() {
   local model
   model="$(render_compose docker-compose.yml)" \
     || fail "docker compose config failed to render the base file"
+  # Reject socket mounts by source OR target: /run/docker.sock:/var/run/docker.sock
+  # must not slip through a source-only check.
   jq -e '
-    ([.services.opencode.volumes[]? | .source // empty]
-      | any(. == "/var/run/docker.sock") | not)
+    ([.services.opencode.volumes[]?
+       | select(((.source // "") | test("docker[.]sock$"))
+             or ((.target // "") | test("docker[.]sock$")))
+      ]
+      | length) == 0
     and (.services.opencode.privileged // false | not)
     and (.services.opencode.user == null)
-  ' <<<"$model" >/dev/null || fail "base compose: opencode service must mount no docker.sock, request no privileged mode and set no user:"$'\n'"$(jq -c '.services.opencode | {volumes, privileged, user}' <<<"$model")"
+  ' <<<"$model" >/dev/null \
+    || fail "base compose: opencode service must mount no docker.sock (any source/target), request no privileged mode and set no user:"$'\n'"$(jq -c '.services.opencode | {volumes, privileged, user}' <<<"$model")"
 }
 
 test_sandbox_overlay_is_socket_control_plane_only() {
@@ -92,13 +100,18 @@ test_sandbox_overlay_is_socket_control_plane_only() {
   model="$(render_compose 'docker-compose.yml docker-compose.sandbox.yml')" \
     || fail "docker compose config failed to render base+sandbox overlay"
   # The overlay documents exactly one socket mount (the sibling control
-  # plane); it must stay, and nothing may gain privileges or a user:.
+  # plane, by target); it must stay, and nothing may gain privileges or a
+  # user: override. Any socket bind beyond that single control-plane mount
+  # is rejected by the source-or-target check.
   jq -e '
-    ([.services.opencode.volumes[]? | .source // empty]
-      | any(. == "/var/run/docker.sock"))
+    ([.services.opencode.volumes[]? | select((.target // "") == "/var/run/docker.sock")]
+      | length) == 1
+    and ([.services.opencode.volumes[]? | select(((.source // "") | test("docker[.]sock$")))]
+      | length) == 1
     and (.services.opencode.privileged // false | not)
     and (.services.opencode.user == null)
-  ' <<<"$model" >/dev/null || fail "sandbox overlay: expected exactly the documented docker.sock control-plane mount and no privileges/user:"$'\n'"$(jq -c '.services.opencode | {volumes, privileged, user}' <<<"$model")"
+  ' <<<"$model" >/dev/null \
+    || fail "sandbox overlay: expected exactly the documented docker.sock control-plane mount and no privileges/user:"$'\n'"$(jq -c '.services.opencode | {volumes, privileged, user}' <<<"$model")"
 }
 
 test_ownership_guard_passes_when_owner_matches() {
@@ -120,11 +133,20 @@ test_ownership_guard_noops_without_a_worktree_root() {
 }
 
 test_ownership_guard_fails_loudly_on_foreign_owner() {
-  # /var is root-owned on every supported host (macOS + Ubuntu runners).
+  # A genuinely foreign-owned path: /var is root-owned for non-root users; a
+  # root runner (uid 0 owns /var) instead gets a fixture chowned to 1:1 —
+  # as root the chown is permitted, so the failure path is always exercised.
+  local foreign="${TMP_ROOT}/foreign-owned"
+  if [[ "$(id -u)" == "0" ]]; then
+    mkdir -p "$foreign" && chown 1:1 "$foreign" \
+      || fail "root runner: could not create a foreign-owned fixture"
+  else
+    foreign=/var # root-owned on every supported host (macOS + Ubuntu runners)
+  fi
   local out status
-  out="$(OPENCODE_WORKTREES_DIR=/var bash "${REPO_ROOT}/docker/assert-worktree-ownership.sh" 2>&1)"
+  out="$(OPENCODE_WORKTREES_DIR="$foreign" bash "${REPO_ROOT}/docker/assert-worktree-ownership.sh" 2>&1)"
   status=$?
-  [[ $status -ne 0 ]] || fail "guard passed although /var is not owned by $(id -u):$(id -g)"
+  [[ $status -ne 0 ]] || fail "guard passed although $foreign is not owned by $(id -u):$(id -g)"
   assert_contains "$out" "assert-worktree-ownership:" \
     || fail "guard failure is not attributable (no assert-worktree-ownership: prefix)"$'\n'"actual: ${out}"
   assert_contains "$out" "OPENCODE_UID" \
@@ -136,6 +158,12 @@ test_entrypoint_wires_the_ownership_guard() {
     || fail "entrypoint.sh does not source assert-worktree-ownership.sh"
   grep -q '^\s*assert_worktree_root_ownership$' "${REPO_ROOT}/docker/entrypoint.sh" \
     || fail "entrypoint.sh does not call assert_worktree_root_ownership"
+  # The authoritative re-check must run after the Infisical inject (which may
+  # define OPENCODE_WORKTREES_DIR) — same placement as the git-identity re-apply.
+  grep -q 'source /usr/local/bin/assert-worktree-ownership.sh' "${REPO_ROOT}/docker/opencode-serve-guarded.sh" \
+    || fail "opencode-serve-guarded.sh does not source assert-worktree-ownership.sh (post-Infisical check)"
+  grep -q '^\s*assert_worktree_root_ownership$' "${REPO_ROOT}/docker/opencode-serve-guarded.sh" \
+    || fail "opencode-serve-guarded.sh does not call assert_worktree_root_ownership (post-Infisical check)"
   grep -q 'COPY docker/assert-worktree-ownership.sh' "${REPO_ROOT}/Dockerfile" \
     || fail "Dockerfile does not COPY assert-worktree-ownership.sh"
 }

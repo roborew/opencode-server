@@ -17,12 +17,14 @@ assert_worktree_root_ownership() {
   [[ -n "$wt" ]] || return 0
   [[ -d "$wt" ]] || return 0
 
-  # `ls -nd` prints numeric uid/gid and works on both GNU (container) and
-  # BSD (macOS host) userland, so this script is testable outside Docker.
+  # `ls -ndL` prints numeric uid/gid of the link TARGET (not the link itself)
+  # and works on both GNU (container) and BSD (macOS host) userland, so this
+  # script is testable outside Docker. A root-owned symlink to a user-owned
+  # worktree root must not pass, and vice versa.
   local owner
   # shellcheck disable=SC2012
-  # (ls -nd is the portable numeric-owner stat; find -printf is GNU-only)
-  if ! owner="$(ls -nd "$wt" | awk '{print $3":"$4}')"; then
+  # (ls -ndL is the portable numeric-owner stat; find -printf is GNU-only)
+  if ! owner="$(ls -ndL "$wt" | awk '{print $3":"$4}')"; then
     echo "assert-worktree-ownership: cannot stat worktree root ${wt} — refusing to start with an unverifiable ownership invariant" >&2
     return 1
   fi

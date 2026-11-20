@@ -121,8 +121,9 @@ RUN ARCH="$(dpkg --print-architecture)" \
 #    --profiles`) and creates missing host worktree mountpoints as the
 #    invoking uid/gid so the Docker daemon cannot materialize them root-owned.
 #    Both commands are purely client-side — they never contact a daemon, so
-#    the server image needs the CLI but never a socket (blueprint §10: only
-#    the sidecar gets docker.sock).
+#    the server image needs the CLI but never a socket for them (today's
+#    control plane is the optional docker-compose.sandbox.yml overlay;
+#    blueprint §10 moves the socket to the sidecar).
 RUN install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
     | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \

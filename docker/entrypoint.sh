@@ -253,6 +253,8 @@ export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"
 # root-owned. A deployment that silently changes the runtime identity away
 # from the worktree owner would block every sandbox slice with
 # foreign-owned mountpoint errors — fail loudly at startup instead.
+# Early check on the compose-time value; opencode-serve-guarded.sh re-runs
+# it after the Infisical inject (which may define OPENCODE_WORKTREES_DIR).
 # shellcheck source=/usr/local/bin/assert-worktree-ownership.sh
 source /usr/local/bin/assert-worktree-ownership.sh
 assert_worktree_root_ownership

@@ -8,6 +8,14 @@ set -euo pipefail
 source /usr/local/bin/configure-git-identity.sh
 configure_git_identity
 
+# The authoritative ownership check runs HERE, after Infisical inject: the
+# project may define OPENCODE_WORKTREES_DIR, which replaces the compose-time
+# value in this process's environment. The entrypoint's early call only covers
+# the pre-Infisical value; this one covers the path the server will use.
+# shellcheck source=/dev/null
+source /usr/local/bin/assert-worktree-ownership.sh
+assert_worktree_root_ownership
+
 CONTAINER_WT="${OPENCODE_CONTAINER_WORKTREE:-/var/opencode-xdg/opencode/worktree}"
 export OPENCODE_CONTAINER_WORKTREE="$CONTAINER_WT"
 
