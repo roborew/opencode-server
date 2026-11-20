@@ -18,8 +18,9 @@
 #     client-side (DOCKER_HOST points at a dead endpoint), the uid/gid
 #     round-trips through a mounted worktree-shaped path, and git is present
 #
-# No Docker daemon is required for the static and unit tests; the image test
-# skips (pass, with a note) when no daemon is available, e.g. on runners
+# No Docker daemon is required for the static and unit tests; checks whose
+# prerequisites are missing record a visible SKIP (never a PASS), and the
+# image test does the same when no daemon is available, e.g. on runners
 # without Docker. Inside the test container no daemon is ever contacted.
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${TEST_DIR}/.." && pwd)"
@@ -28,12 +29,20 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 PASS=0
 FAIL=0
+SKIP=0
 
 fail() {
   echo "    $*" >&2
   # Each test runs in a subshell (run_test), so exit stops the failed test
   # without killing the suite — later checks can't mask an earlier failure.
   exit 1
+}
+
+skip() {
+  echo "    SKIP: $*" >&2
+  # Distinct subshell exit status: run_test records a visible SKIP instead
+  # of a PASS when a check's prerequisites are missing.
+  exit 200
 }
 
 assert_contains() {
@@ -48,9 +57,14 @@ run_test() {
     return 0
   fi
   echo "TEST ${name}"
-  if ( "$@" ); then
+  local status=0
+  ( "$@" ) || status=$?
+  if (( status == 0 )); then
     PASS=$((PASS + 1))
     echo "  PASS"
+  elif (( status == 200 )); then
+    SKIP=$((SKIP + 1))
+    echo "  SKIP"
   else
     FAIL=$((FAIL + 1))
     echo "  FAIL"
@@ -76,7 +90,7 @@ render_compose() {
 }
 
 test_base_compose_grants_no_daemon_access() {
-  docker_compose_available || { echo "    SKIP: docker/jq not on host"; return 0; }
+  docker_compose_available || skip "docker/jq not on host - cannot render the compose contract"
   local model
   model="$(render_compose docker-compose.yml)" \
     || fail "docker compose config failed to render the base file"
@@ -95,7 +109,7 @@ test_base_compose_grants_no_daemon_access() {
 }
 
 test_sandbox_overlay_is_socket_control_plane_only() {
-  docker_compose_available || { echo "    SKIP: docker/jq not on host"; return 0; }
+  docker_compose_available || skip "docker/jq not on host - cannot render the compose contract"
   local model
   model="$(render_compose 'docker-compose.yml docker-compose.sandbox.yml')" \
     || fail "docker compose config failed to render base+sandbox overlay"
@@ -104,10 +118,12 @@ test_sandbox_overlay_is_socket_control_plane_only() {
   # user: override. Any socket bind beyond that single control-plane mount
   # is rejected by the source-or-target check.
   jq -e '
-    ([.services.opencode.volumes[]? | select((.target // "") == "/var/run/docker.sock")]
-      | length) == 1
-    and ([.services.opencode.volumes[]? | select(((.source // "") | test("docker[.]sock$")))]
-      | length) == 1
+    ([.services.opencode.volumes[]?
+       | select(((.source // "") | test("docker[.]sock$"))
+             or ((.target // "") | test("docker[.]sock$")))] as $socks
+      | ($socks | length) == 1
+      and ($socks[0].source == "/var/run/docker.sock")
+      and ($socks[0].target == "/var/run/docker.sock"))
     and (.services.opencode.privileged // false | not)
     and (.services.opencode.user == null)
   ' <<<"$model" >/dev/null \
@@ -173,7 +189,7 @@ pinned_arg() {
 }
 
 test_image_ships_the_preflight_toolchain() {
-  docker info >/dev/null 2>&1 || { echo "    SKIP: no Docker daemon on the host"; return 0; }
+  docker info >/dev/null 2>&1 || skip "no Docker daemon on the host - cannot build server-tools"
   local cli_version compose_version
   cli_version="$(pinned_arg DOCKER_CLI_VERSION)"
   compose_version="$(pinned_arg DOCKER_COMPOSE_VERSION)"
@@ -220,8 +236,8 @@ run_test "entrypoint wires the ownership guard" test_entrypoint_wires_the_owners
 run_test "image ships the client-side preflight toolchain" test_image_ships_the_preflight_toolchain
 
 echo
-printf 'Result: %d passed, %d failed\n' "$PASS" "$FAIL"
-if (( PASS + FAIL == 0 )); then
+printf 'Result: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
+if (( PASS + FAIL + SKIP == 0 )); then
   if [[ -n "${TEST_FILTER:-}" ]]; then
     echo "No tests matched TEST_FILTER='${TEST_FILTER}'." >&2
   else
