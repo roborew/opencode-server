@@ -69,15 +69,15 @@ Connect remotely (with Twingate): `http://opencode.local:4097`, or from a v2 CLI
 
 ## Docs
 
-| Topic                                                     | Doc                                                |
-| --------------------------------------------------------- | -------------------------------------------------- |
-| Setup script, projects, workspaces                        | [docs/setup.md](docs/setup.md)                     |
-| Environment variables & Infisical                         | [docs/environment.md](docs/environment.md)         |
-| Twingate, ports, hosts, localhost rewrite                 | [docs/access.md](docs/access.md)                   |
-| Claude Context, GitHub, managed MCP upstreams | [docs/integrations.md](docs/integrations.md)       |
-| Sysbox sibling sandboxes (Ubuntu)                         | [docs/sandbox.md](docs/sandbox.md)                 |
-| Troubleshooting                                           | [docs/troubleshooting.md](docs/troubleshooting.md) |
-| Docs index                                                | [docs/README.md](docs/README.md)                   |
+| Topic                                                                                 | Doc                                                |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Setup script, projects, workspaces                                                    | [docs/setup.md](docs/setup.md)                     |
+| Environment variables & Infisical                                                     | [docs/environment.md](docs/environment.md)         |
+| Twingate, ports, hosts, localhost rewrite                                             | [docs/access.md](docs/access.md)                   |
+| Claude Context, GitHub, managed MCP upstreams                                         | [docs/integrations.md](docs/integrations.md)       |
+| Sysbox sibling sandboxes (Ubuntu), oc-sandbox mountpoint preflight image requirements | [docs/sandbox.md](docs/sandbox.md)                 |
+| Troubleshooting                                                                       | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Docs index                                                                            | [docs/README.md](docs/README.md)                   |
 
 ## Layout
 
@@ -90,7 +90,8 @@ Connect remotely (with Twingate): `http://opencode.local:4097`, or from a v2 CLI
 ├── scripts/compose.sh           # Infisical-injected docker compose wrapper
 ├── scripts/doctor-perf.sh
 ├── scripts/sandbox/             # sandbox CLI + build/smoke
-├── docker/                      # entrypoint, merge-config, plugins
+├── docker/                      # entrypoint, merge-config, plugins, worktree-ownership guard
+├── tests/                        # setup regression + image preflight tests
 ├── docs/
 ├── overrides/opencode.server.json
 └── .env.example

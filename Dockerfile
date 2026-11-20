@@ -1,6 +1,10 @@
 # OpenCode server image: clones agents/skills config from GitHub at build time.
 # Runtime secrets via Infisical (deployed) or compose .env (local).
-FROM ubuntu:24.04
+# Stage `server-tools` = base OS + pinned CLIs (git, jq, yq, node, gh,
+# infisical, docker CLI + compose plugin) only; tests/image-preflight.sh builds
+# that target to assert image content without the MCP preinstall, config-repo
+# clone and OpenCode install in the final stage.
+FROM ubuntu:24.04 AS server-tools
 
 ARG CONFIG_REPO=https://github.com/roborew/opencode-config-v2.git
 ARG CONFIG_REF=main
@@ -12,6 +16,10 @@ ARG YQ_VERSION=v4.53.2
 # differ on macOS, e.g. 501:20).
 ARG OPENCODE_UID=1000
 ARG OPENCODE_GID=1000
+# Docker CLI + compose plugin, pinned to download.docker.com's noble repo
+# (client-side only — no dockerd, no socket). Bump deliberately.
+ARG DOCKER_CLI_VERSION=29.10.0
+ARG DOCKER_COMPOSE_VERSION=5.8.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/opencode
@@ -103,12 +111,19 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && rm -f /tmp/infisical.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# claude-context MCP (preinstall — npx at runtime races on native tree-sitter deps)
-RUN npm install -g @zilliz/claude-context-mcp@latest
-
-# Docker CLI only (no dockerd). Used when docker-compose.sandbox.yml mounts the
-# host socket so agents can create Sysbox sibling sandboxes. Without the socket
-# mount (Mac / OPENCODE_SANDBOX_MODE=off), `sandbox probe` reports unavailable.
+# Docker CLI only (no dockerd, no socket). Two consumers:
+# 1. `sandbox create/exec/destroy` when docker-compose.sandbox.yml mounts the
+#    host socket (optional Sysbox sibling control plane). Without the socket
+#    mount (Mac / OPENCODE_SANDBOX_MODE=off), `sandbox probe` reports unavailable.
+# 2. The config repo's oc-sandbox mountpoint preflight (opencode-config-v2):
+#    before every Compose operation it renders the effective model with
+#    `docker compose --profile <all> config --format json` (+ `config
+#    --profiles`) and creates missing host worktree mountpoints as the
+#    invoking uid/gid so the Docker daemon cannot materialize them root-owned.
+#    Both commands are purely client-side — they never contact a daemon, so
+#    the server image needs the CLI but never a socket for them (today's
+#    control plane is the optional docker-compose.sandbox.yml overlay;
+#    blueprint §10 moves the socket to the sidecar).
 RUN install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
     | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
@@ -116,8 +131,27 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" \
     > /etc/apt/sources.list.d/docker.list \
     && apt-get update \
-    && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+    && apt-get install -y --no-install-recommends \
+    docker-ce-cli="5:${DOCKER_CLI_VERSION}-1~ubuntu.24.04~noble" \
+    docker-compose-plugin="${DOCKER_COMPOSE_VERSION}-1~ubuntu.24.04~noble" \
+    && docker --version \
+    && docker compose version \
     && rm -rf /var/lib/apt/lists/*
+
+# ---- final stage: OpenCode + cloned config ----------------------------------
+# ENV (PATH/HOME) and the opencode passwd/group entries persist from
+# server-tools; ARG values do not — redeclare the ones used below (defaults
+# duplicated from the server-tools stage; compose build args override both).
+# The stage boundary deliberately sits ABOVE the claude-context preinstall:
+# the oc-sandbox mountpoint preflight needs git + the docker CLI + the
+# runtime identity, not the app-level MCP, so its test target stays buildable
+# and fast regardless of native-dep churn here.
+FROM server-tools
+ARG CONFIG_REPO=https://github.com/roborew/opencode-config-v2.git
+ARG CONFIG_REF=main
+
+# claude-context MCP (preinstall — npx at runtime races on native tree-sitter deps)
+RUN npm install -g @zilliz/claude-context-mcp@latest
 
 # OpenCode CLI v2 (pinned). The v1 installer at https://opencode.ai/install
 # serves 1.x only and refuses to install 2.x — the v2 installer lives at
@@ -137,6 +171,7 @@ COPY --chown=opencode:opencode overrides/ /home/opencode/overrides/
 COPY --chown=opencode:opencode docker/plugins/ /home/opencode/overrides/plugins/
 COPY docker/entrypoint.sh /usr/local/bin/opencode-entrypoint.sh
 COPY docker/configure-git-identity.sh /usr/local/bin/configure-git-identity.sh
+COPY docker/assert-worktree-ownership.sh /usr/local/bin/assert-worktree-ownership.sh
 COPY docker/merge-config.py /usr/local/bin/merge-config.py
 COPY docker/rewrite-worktree-gitdirs.py /usr/local/bin/rewrite-worktree-gitdirs.py
 COPY docker/worktree-delete-guard.py /usr/local/bin/worktree-delete-guard.py
@@ -144,6 +179,7 @@ COPY docker/opencode-serve-guarded.sh /usr/local/bin/opencode-serve-guarded.sh
 COPY --chown=opencode:opencode scripts/sandbox/sandbox /usr/local/bin/sandbox
 RUN chmod +x /usr/local/bin/opencode-entrypoint.sh \
     /usr/local/bin/configure-git-identity.sh \
+    /usr/local/bin/assert-worktree-ownership.sh \
     /usr/local/bin/merge-config.py \
     /usr/local/bin/rewrite-worktree-gitdirs.py /usr/local/bin/worktree-delete-guard.py \
     /usr/local/bin/opencode-serve-guarded.sh \

@@ -1,0 +1,15 @@
+# Fixture for tests/image-preflight.sh — mirrors the model shape the
+# oc-sandbox mountpoint preflight (opencode-config-v2) renders before every
+# Compose operation: a profile-gated service, a bind mount whose host source
+# may not exist yet, and an anonymous volume nested under the bind target.
+# Without the preflight the Docker daemon materializes both host paths as
+# root: the bind source ./apps/api and, through the bind, the host-side
+# mountpoint of the nested anonymous volume (apps/api/.venv).
+services:
+  app:
+    image: busybox:1.37
+    profiles: ["test"]
+    working_dir: /repo
+    volumes:
+      - ./apps/api:/repo/apps/api
+      - /repo/apps/api/.venv
