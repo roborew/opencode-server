@@ -95,7 +95,7 @@ export MILVUS_ADDRESS=http://localhost:19530
 export MILVUS_TOKEN=local
 ```
 
-Local `opencode` and the Docker server can share the same vector index. Still keep host `claude-context` disabled when Desktop attaches to this server — see [integrations.md](integrations.md#claude-context-indexing).
+The Docker server does not enable Claude Context and does not use this vector index; it is available only for host-side indexing or a future deliberate re-enable. Keep host `claude-context` disabled when Desktop attaches to this server — see [integrations.md](integrations.md#claude-context-indexing).
 
 ## Localhost URLs inside Docker
 

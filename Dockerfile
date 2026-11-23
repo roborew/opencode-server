@@ -2,8 +2,8 @@
 # Runtime secrets via Infisical (deployed) or compose .env (local).
 # Stage `server-tools` = base OS + pinned CLIs (git, jq, yq, node, gh,
 # infisical, docker CLI + compose plugin) only; tests/image-preflight.sh builds
-# that target to assert image content without the MCP preinstall, config-repo
-# clone and OpenCode install in the final stage.
+# that target to assert image content without the config-repo clone and
+# OpenCode install in the final stage.
 FROM ubuntu:24.04 AS server-tools
 
 ARG CONFIG_REPO=https://github.com/roborew/opencode-config-v2.git
@@ -16,6 +16,8 @@ ARG YQ_VERSION=v4.53.2
 # differ on macOS, e.g. 501:20).
 ARG OPENCODE_UID=1000
 ARG OPENCODE_GID=1000
+# Exact Node.js release (config repo requires engines.node >= 24).
+ARG NODE_VERSION=24.22.2
 # Docker CLI + compose plugin, pinned to download.docker.com's noble repo
 # (client-side only — no dockerd, no socket). Bump deliberately.
 ARG DOCKER_CLI_VERSION=29.10.0
@@ -68,23 +70,20 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && chmod +x /usr/local/bin/yq \
     && yq --version
 
-# Node.js 24 (claude-context MCP supports Node >=20; upstream documents 20.x/22.x/24.x).
-# Its native deps are NAPI (faiss-node, tree-sitter grammars), so the prebuilt
-# binaries load unchanged on 24 — no source rebuild. 24 also satisfies the
-# config repo's `engines.node >= 24`.
-# Install from official nodejs.org binaries (includes npm) to avoid NodeSource 403s.
+# Node.js 24, pinned exactly. The config repo requires `engines.node >= 24`,
+# and both its `npm ci` layer and the OpenCode CLI use node/npm. Install the
+# official versioned nodejs.org binary (includes npm) to avoid NodeSource 403s.
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
     amd64) NODE_ARCH=x64 ;; \
     arm64) NODE_ARCH=arm64 ;; \
     *) echo "unsupported dpkg arch for Node.js: $ARCH" >&2; exit 1 ;; \
     esac \
-    && NODE_FILENAME="$(curl -fsSL https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt | grep "linux-${NODE_ARCH}.tar.xz" | awk "NR==1 {print \$2}")" \
-    && test -n "$NODE_FILENAME" \
-    && curl -fsSL "https://nodejs.org/dist/latest-v24.x/${NODE_FILENAME}" -o /tmp/node.tar.xz \
+    && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+    -o /tmp/node.tar.xz \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
     && rm -f /tmp/node.tar.xz \
-    && node --version \
+    && test "$(node --version)" = "v${NODE_VERSION}" \
     && npm --version
 
 # GitHub CLI (apt stable; need >= 2.94 when using GH_PROJECT boards)
@@ -142,16 +141,12 @@ RUN install -m 0755 -d /etc/apt/keyrings \
 # ENV (PATH/HOME) and the opencode passwd/group entries persist from
 # server-tools; ARG values do not — redeclare the ones used below (defaults
 # duplicated from the server-tools stage; compose build args override both).
-# The stage boundary deliberately sits ABOVE the claude-context preinstall:
-# the oc-sandbox mountpoint preflight needs git + the docker CLI + the
-# runtime identity, not the app-level MCP, so its test target stays buildable
-# and fast regardless of native-dep churn here.
+# The stage boundary deliberately sits above the OpenCode/config install: the
+# oc-sandbox mountpoint preflight needs git + the docker CLI + the runtime
+# identity, not app-level layers, so its test target stays buildable and fast.
 FROM server-tools
 ARG CONFIG_REPO=https://github.com/roborew/opencode-config-v2.git
 ARG CONFIG_REF=main
-
-# claude-context MCP (preinstall — npx at runtime races on native tree-sitter deps)
-RUN npm install -g @zilliz/claude-context-mcp@latest
 
 # OpenCode CLI v2 (pinned). The v1 installer at https://opencode.ai/install
 # serves 1.x only and refuses to install 2.x — the v2 installer lives at

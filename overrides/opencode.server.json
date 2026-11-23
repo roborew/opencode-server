@@ -12,6 +12,7 @@
   "mcp": {
     "servers": {
       "claude-context": {
+        "disabled": true,
         "type": "local",
         "command": ["claude-context-mcp"],
         "timeout": { "execution": 120000 },

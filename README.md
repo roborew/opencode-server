@@ -1,6 +1,6 @@
 # OpenCode + Twingate + Milvus
 
-Self-contained Docker Compose stack for a headless OpenCode server, Twingate remote access, and optional Milvus-backed `claude-context` indexing.
+Self-contained Docker Compose stack for a headless OpenCode server, Twingate remote access, and an optional Milvus vector store. Server-side `claude-context` indexing is disabled.
 
 **Build and run only from this directory.** The config (`opencode.jsonc`, agents, commands, skills, plugins) is cloned from [github.com/roborew/opencode-config-v2](https://github.com/roborew/opencode-config-v2) at image build time (`CONFIG_REPO` / `CONFIG_REF`). Your local `~/.config/opencode` checkout is never mounted into the image.
 
@@ -19,7 +19,7 @@ Never add `-v` to `down`. See [Config and image refresh](#config-and-image-refre
 | ---------------------------------- | ------------------------------------------------------------------------- |
 | `opencode-server`                  | `opencode serve` on `0.0.0.0:4097`                                        |
 | `twingate-connector`               | Proxies remote clients to `OPENCODE_FQDN:4097` (default `opencode.local`) |
-| `milvus-standalone` + etcd + minio | Vector store for `claude-context` MCP (`COMPOSE_PROFILES=milvus`)         |
+| `milvus-standalone` + etcd + minio | Optional vector store (`COMPOSE_PROFILES=milvus`); server indexing is off |
 
 ## Install / quick start
 
@@ -78,7 +78,7 @@ Connect remotely (with Twingate) at `http://opencode.local:4097`, or point a v2 
 opencode --server http://opencode.local:4097
 ```
 
-**Important:** Do not enable host `claude-context` while this Docker server is indexing — see [docs/integrations.md](docs/integrations.md#claude-context-indexing).
+**Important:** This image does not install `claude-context-mcp`; the deployment override disables server-side indexing. See [docs/integrations.md](docs/integrations.md#claude-context-indexing) before using host-side indexing.
 
 ## Management commands
 
