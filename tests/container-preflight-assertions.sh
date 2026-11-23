@@ -46,8 +46,11 @@ docker --version | grep -q "Docker version ${PINNED_DOCKER_CLI}," \
   || die "unpinned/unexpected docker CLI: $(docker --version)"
 docker compose version | grep -q "Docker Compose version v${PINNED_COMPOSE}" \
   || die "unpinned/unexpected compose plugin: $(docker compose version)"
-docker buildx version | grep -q "github.com/docker/buildx v${PINNED_BUILDX}" \
-  || die "missing or unpinned buildx plugin: $(docker buildx version 2>&1)"
+buildx_output="$(docker buildx version 2>&1)" \
+  || die "missing buildx plugin: ${buildx_output}"
+buildx_version="$(awk '{print $2}' <<<"$buildx_output")"
+[[ "$buildx_version" == "v${PINNED_BUILDX}" ]] \
+  || die "unpinned/unexpected buildx plugin: ${buildx_output}"
 
 step "compose render is client-side (dead DOCKER_HOST)"
 # The preflight never contacts a daemon; a dead endpoint must not matter.

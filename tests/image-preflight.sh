@@ -199,6 +199,9 @@ test_docker_tool_pins_are_forwarded_to_the_image_build() {
   buildx_version="$(pinned_arg DOCKER_BUILDX_VERSION)"
   [[ -n "$cli_version" && -n "$compose_version" && -n "$buildx_version" ]] \
     || fail "DOCKER_CLI_VERSION/DOCKER_COMPOSE_VERSION/DOCKER_BUILDX_VERSION not pinned in the Dockerfile"
+  # This check verifies the Dockerfile defaults, so do not let operator
+  # overrides exported in the calling environment change the rendered values.
+  unset DOCKER_CLI_VERSION DOCKER_COMPOSE_VERSION DOCKER_BUILDX_VERSION
   model="$(render_compose docker-compose.yml)" \
     || fail "docker compose config failed to render the build arguments"
   jq -e \
