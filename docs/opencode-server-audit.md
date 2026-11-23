@@ -99,7 +99,7 @@ Re-run this before any future OpenCode version bump.
 | Infisical CLI | 0.43.84 | 0.44.10 (0.45.x rolling) | Note: Infisical moved its Linux package repo off Cloudsmith to `artifacts-cli.infisical.com` (Sep 2026) — your Dockerfile downloads the `.deb` from GitHub Releases, so it's unaffected ([Infisical/cli](https://github.com/Infisical/cli)) |
 | Milvus | v2.6.12 | v2.6.27 (3.0.6 exists) | Stay on 2.6.x — claude-context compatibility; 3.0 is a new architecture ([Milvus releases](https://github.com/milvus-io/milvus/releases)) |
 | yq | v4.53.2 | v4.53.x | Current; fine |
-| Node.js | 24 (latest-v24.x) | 26 LTS (Lithium) | claude-context documents Node 20.x/22.x/24.x and its native deps are NAPI prebuilds — 24 is the documented ceiling and satisfies the config repo's `engines.node >= 24` |
+| Node.js | 24.22.2 (exact) | 26 LTS (Lithium) | Pinned exact Node 24: the config repo requires `engines.node >= 24`, and the unused `claude-context` preinstall that failed against Node 24 V8 headers was removed |
 | Ubuntu base | 24.04 | 26.04 LTS | Leave as-is; Sysbox 0.7.0 is verified on 24.04, and the base image is independent of the host runtime |
 | etcd / minio | v3.5.25 / RELEASE.2024-12-18 | newer available | Only used by the optional Milvus profile; safe to bump on the next Milvus upgrade, not urgent |
 

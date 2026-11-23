@@ -6,6 +6,7 @@ services:
         CONFIG_REPO: ${CONFIG_REPO:-https://github.com/roborew/opencode-config-v2.git}
         CONFIG_REF: ${CONFIG_REF:-main}
         OPENCODE_VERSION: ${OPENCODE_VERSION:-2.3.0}
+        NODE_VERSION: ${NODE_VERSION:-24.22.2}
         OPENCODE_UID: ${OPENCODE_UID:-1000}
         OPENCODE_GID: ${OPENCODE_GID:-1000}
         # Pinned docker CLI + compose plugin (oc-sandbox mountpoint preflight
