@@ -9,6 +9,8 @@ Semantic indexing is optional — OpenCode works without it; it only speeds disc
 | **Desktop / CLI → this Docker server** (default)       | Not enabled                      | Leave host `mcp.servers.claude-context.disabled` **`true`** in `~/.config/opencode/opencode.json(c)`. The deployed override keeps the server definition disabled so the missing binary is never invoked. |
 | **Local only** (no Docker server; Desktop/CLI on host) | Host MCP in `~/.config/opencode` | Enable the `claude-context` server in that checkout's `opencode.json(c)` (`mcp.servers.claude-context`). The config repo is [opencode-config-v2](https://github.com/roborew/opencode-config-v2).         |
 
+**Why it is disabled:** `@zilliz/claude-context-mcp` `0.1.16` pulls `tree-sitter@0.21.1`, which fails to compile against Node 24 V8 headers and has no usable prebuilt binding. The latest stable MCP/core release has the same dependency, and `0.1.17-rc.0` still requires `tree-sitter@^0.21.1`. Since server-side indexing is unused, the image removes the preinstall rather than pinning Node 22 or carrying an unverified transitive override.
+
 Re-enabling server-side indexing requires restoring a Node-24-compatible `claude-context-mcp` installation in the image and removing the `disabled` flag. Validate the MCP at runtime before relying on it.
 
 Diagnose freezes with `./scripts/doctor-perf.sh`.
