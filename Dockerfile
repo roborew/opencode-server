@@ -1,7 +1,7 @@
 # OpenCode server image: clones agents/skills config from GitHub at build time.
 # Runtime secrets via Infisical (deployed) or compose .env (local).
 # Stage `server-tools` = base OS + pinned CLIs (git, jq, yq, node, gh,
-# infisical, docker CLI + compose plugin) only; tests/image-preflight.sh builds
+# infisical, docker CLI + compose/buildx plugins) only; tests/image-preflight.sh builds
 # that target to assert image content without the config-repo clone and
 # OpenCode install in the final stage.
 FROM ubuntu:24.04 AS server-tools
@@ -18,10 +18,13 @@ ARG OPENCODE_UID=1000
 ARG OPENCODE_GID=1000
 # Exact Node.js release (config repo requires engines.node >= 24).
 ARG NODE_VERSION=24.22.2
-# Docker CLI + compose plugin, pinned to download.docker.com's noble repo
-# (client-side only — no dockerd, no socket). Bump deliberately.
+# Docker CLI + compose/buildx plugins, pinned to download.docker.com's noble
+# repo (no dockerd in the image). Compose needs buildx to run BuildKit builds
+# through the sandbox control-plane socket; without it, Compose falls back to
+# the classic builder, which rejects Dockerfile RUN --mount. Bump deliberately.
 ARG DOCKER_CLI_VERSION=29.10.0
 ARG DOCKER_COMPOSE_VERSION=5.8.0
+ARG DOCKER_BUILDX_VERSION=0.39.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/opencode
@@ -110,11 +113,13 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && rm -f /tmp/infisical.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# Docker CLI only (no dockerd, no socket). Two consumers:
+# Docker CLI only (no dockerd). Consumers:
 # 1. `sandbox create/exec/destroy` when docker-compose.sandbox.yml mounts the
 #    host socket (optional Sysbox sibling control plane). Without the socket
 #    mount (Mac / OPENCODE_SANDBOX_MODE=off), `sandbox probe` reports unavailable.
-# 2. The config repo's oc-sandbox mountpoint preflight (opencode-config-v2):
+# 2. The config repo's oc-sandbox slice builds/tests (opencode-config-v2):
+#    Compose uses the buildx plugin for BuildKit builds, including RUN --mount.
+# 3. The config repo's oc-sandbox mountpoint preflight (opencode-config-v2):
 #    before every Compose operation it renders the effective model with
 #    `docker compose --profile <all> config --format json` (+ `config
 #    --profiles`) and creates missing host worktree mountpoints as the
@@ -133,8 +138,10 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends \
     docker-ce-cli="5:${DOCKER_CLI_VERSION}-1~ubuntu.24.04~noble" \
     docker-compose-plugin="${DOCKER_COMPOSE_VERSION}-1~ubuntu.24.04~noble" \
+    docker-buildx-plugin="${DOCKER_BUILDX_VERSION}-1~ubuntu.24.04~noble" \
     && docker --version \
     && docker compose version \
+    && docker buildx version \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- final stage: OpenCode + cloned config ----------------------------------

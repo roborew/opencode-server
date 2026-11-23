@@ -2,7 +2,8 @@
 # Runs INSIDE the opencode-server image, as the invoking uid/gid and WITHOUT
 # any Docker socket, asserting everything the oc-sandbox mountpoint preflight
 # (opencode-config-v2) requires from the image:
-#   1. `docker compose version` succeeds and reports a compose plugin
+#   1. `docker compose version` and `docker buildx version` succeed and
+#      report the pinned plugins
 #   2. this fixture compose.yml renders: `config --profiles` lists the
 #      declared profile; `--profile test config --format json` emits valid
 #      JSON whose service volumes include the bind (absolute source) and the
@@ -18,6 +19,7 @@ EXPECTED_UID="${EXPECTED_UID:?EXPECTED_UID not set}"
 EXPECTED_GID="${EXPECTED_GID:?EXPECTED_GID not set}"
 PINNED_DOCKER_CLI="${PINNED_DOCKER_CLI:?PINNED_DOCKER_CLI not set}"
 PINNED_COMPOSE="${PINNED_COMPOSE:?PINNED_COMPOSE not set}"
+PINNED_BUILDX="${PINNED_BUILDX:?PINNED_BUILDX not set}"
 FX_DIR="${FX_DIR:-/work/preflight-compose}"
 WT_FX="${WT_FX:-/work/wt-shape}"
 
@@ -44,6 +46,11 @@ docker --version | grep -q "Docker version ${PINNED_DOCKER_CLI}," \
   || die "unpinned/unexpected docker CLI: $(docker --version)"
 docker compose version | grep -q "Docker Compose version v${PINNED_COMPOSE}" \
   || die "unpinned/unexpected compose plugin: $(docker compose version)"
+buildx_output="$(docker buildx version 2>&1)" \
+  || die "missing buildx plugin: ${buildx_output}"
+buildx_version="$(awk '{print $2}' <<<"$buildx_output")"
+[[ "$buildx_version" == "v${PINNED_BUILDX}" ]] \
+  || die "unpinned/unexpected buildx plugin: ${buildx_output}"
 
 step "compose render is client-side (dead DOCKER_HOST)"
 # The preflight never contacts a daemon; a dead endpoint must not matter.
