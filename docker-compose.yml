@@ -9,10 +9,12 @@ services:
         NODE_VERSION: ${NODE_VERSION:-24.22.2}
         OPENCODE_UID: ${OPENCODE_UID:-1000}
         OPENCODE_GID: ${OPENCODE_GID:-1000}
-        # Pinned docker CLI + compose plugin (oc-sandbox mountpoint preflight
-        # runs `docker compose config` client-side; see docs/sandbox.md).
+        # Pinned docker CLI + compose/buildx plugins (oc-sandbox builds use
+        # BuildKit; the mountpoint preflight renders Compose client-side; see
+        # docs/sandbox.md).
         DOCKER_CLI_VERSION: ${DOCKER_CLI_VERSION:-29.10.0}
         DOCKER_COMPOSE_VERSION: ${DOCKER_COMPOSE_VERSION:-5.8.0}
+        DOCKER_BUILDX_VERSION: ${DOCKER_BUILDX_VERSION:-0.39.1}
     container_name: opencode-server
     restart: unless-stopped
     # Keep a runaway upstream from exhausting the host. `memswap_limit` equals

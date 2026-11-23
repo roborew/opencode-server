@@ -12,11 +12,14 @@
 #   - unit tests of docker/assert-worktree-ownership.sh (the startup guard
 #     that fails loudly when the runtime uid/gid stops matching the worktree
 #     owner)
+#   - deployment contract: the Docker CLI, Compose and Buildx pins are
+#     forwarded from docker-compose.yml into the image build
 #   - image test: builds the Dockerfile `server-tools` stage and, inside a
 #     container run as the invoking uid/gid with NO Docker socket, asserts
-#     the pinned docker CLI + compose plugin render the preflight fixture
-#     client-side (DOCKER_HOST points at a dead endpoint), the uid/gid
-#     round-trips through a mounted worktree-shaped path, and git is present
+#     the pinned docker CLI, compose plugin and buildx plugin are installed,
+#     the compose model renders the preflight fixture client-side (DOCKER_HOST
+#     points at a dead endpoint), the uid/gid round-trips through a mounted
+#     worktree-shaped path, and git is present
 #
 # No Docker daemon is required for the static and unit tests; checks whose
 # prerequisites are missing record a visible SKIP (never a PASS), and the
@@ -188,13 +191,36 @@ pinned_arg() {
   sed -n "s/^ARG $1=//p" "${REPO_ROOT}/Dockerfile" | head -n1
 }
 
-test_image_ships_the_preflight_toolchain() {
-  docker info >/dev/null 2>&1 || skip "no Docker daemon on the host - cannot build server-tools"
-  local cli_version compose_version
+test_docker_tool_pins_are_forwarded_to_the_image_build() {
+  docker_compose_available || skip "docker/jq not on host - cannot render the compose contract"
+  local cli_version compose_version buildx_version model
   cli_version="$(pinned_arg DOCKER_CLI_VERSION)"
   compose_version="$(pinned_arg DOCKER_COMPOSE_VERSION)"
-  [[ -n "$cli_version" && -n "$compose_version" ]] \
-    || fail "DOCKER_CLI_VERSION/DOCKER_COMPOSE_VERSION not pinned in the Dockerfile"
+  buildx_version="$(pinned_arg DOCKER_BUILDX_VERSION)"
+  [[ -n "$cli_version" && -n "$compose_version" && -n "$buildx_version" ]] \
+    || fail "DOCKER_CLI_VERSION/DOCKER_COMPOSE_VERSION/DOCKER_BUILDX_VERSION not pinned in the Dockerfile"
+  model="$(render_compose docker-compose.yml)" \
+    || fail "docker compose config failed to render the build arguments"
+  jq -e \
+    --arg cli "$cli_version" \
+    --arg compose "$compose_version" \
+    --arg buildx "$buildx_version" \
+    '.services.opencode.build.args
+      | .DOCKER_CLI_VERSION == $cli
+      and .DOCKER_COMPOSE_VERSION == $compose
+      and .DOCKER_BUILDX_VERSION == $buildx' \
+    <<<"$model" >/dev/null \
+    || fail "compose does not forward the Docker CLI/Compose/Buildx pins from the Dockerfile:"$'\n'"$(jq -c '.services.opencode.build.args | {DOCKER_CLI_VERSION, DOCKER_COMPOSE_VERSION, DOCKER_BUILDX_VERSION}' <<<"$model")"
+}
+
+test_image_ships_the_preflight_toolchain() {
+  docker info >/dev/null 2>&1 || skip "no Docker daemon on the host - cannot build server-tools"
+  local cli_version compose_version buildx_version
+  cli_version="$(pinned_arg DOCKER_CLI_VERSION)"
+  compose_version="$(pinned_arg DOCKER_COMPOSE_VERSION)"
+  buildx_version="$(pinned_arg DOCKER_BUILDX_VERSION)"
+  [[ -n "$cli_version" && -n "$compose_version" && -n "$buildx_version" ]] \
+    || fail "DOCKER_CLI_VERSION/DOCKER_COMPOSE_VERSION/DOCKER_BUILDX_VERSION not pinned in the Dockerfile"
 
   local tag="opencode-server-tools:preflight-test"
   echo "    building --target server-tools (first build can take a few minutes; layer cache speeds up reruns)"
@@ -212,6 +238,7 @@ test_image_ships_the_preflight_toolchain() {
     -u "$(id -u):$(id -g)" \
     -e EXPECTED_UID="$(id -u)" -e EXPECTED_GID="$(id -g)" \
     -e PINNED_DOCKER_CLI="$cli_version" -e PINNED_COMPOSE="$compose_version" \
+    -e PINNED_BUILDX="$buildx_version" \
     -v "${work}:/work" -v "${REPO_ROOT}/tests:/tests:ro" -w /work \
     "$tag" bash /tests/container-preflight-assertions.sh 2>&1)" \
     || { echo "$out" >&2; fail "in-container preflight assertions failed"; return 1; }
@@ -233,6 +260,7 @@ run_test "ownership guard passes when the worktree owner matches" test_ownership
 run_test "ownership guard is a no-op without a worktree root" test_ownership_guard_noops_without_a_worktree_root
 run_test "ownership guard fails loudly on a foreign-owned worktree root" test_ownership_guard_fails_loudly_on_foreign_owner
 run_test "entrypoint wires the ownership guard" test_entrypoint_wires_the_ownership_guard
+run_test "docker tool pins are forwarded to the image build" test_docker_tool_pins_are_forwarded_to_the_image_build
 run_test "image ships the client-side preflight toolchain" test_image_ships_the_preflight_toolchain
 
 echo
