@@ -112,12 +112,11 @@ fi
 # --- runtime user (OPENCODE_UID) from here -----------------------------------
 export OPENCODE_CONFIG_DIR="${OPENCODE_CONFIG_DIR:-/home/opencode/.config/opencode}"
 export OPENCODE_OVERRIDE="${OPENCODE_OVERRIDE:-/home/opencode/overrides/opencode.server.json}"
-export MILVUS_ADDRESS="${MILVUS_ADDRESS:-http://milvus-standalone:19530}"
 export PATH="/home/opencode/.config/opencode/bin:/home/opencode/.opencode/bin:/home/opencode/.local/bin:${PATH}"
 export HOME="/home/opencode"
 
 # Keep XDG inside the container (/var/opencode-xdg) so Docker MCP/sessions never
-# share ~/.local/share/opencode with Desktop (that collision breaks claude-context).
+# share ~/.local/share/opencode with Desktop (concurrent writers corrupt state).
 # Host worktrees are bind-mounted onto $XDG_DATA_HOME/opencode/worktree and again
 # at OPENCODE_WORKTREES_DIR (same-path) so checkouts live on the Mac.
 VOLUME_DATA="${OPENCODE_VOLUME_DATA:-/var/lib/opencode-data}"

@@ -1,6 +1,6 @@
-# OpenCode + Twingate + Milvus
+# OpenCode + Twingate
 
-Self-contained Docker Compose stack for a headless OpenCode server, Twingate remote access, and an optional Milvus vector store. Server-side `claude-context` indexing is disabled.
+Self-contained Docker Compose stack for a headless OpenCode server, and Twingate remote access.
 
 **Build and run only from this directory.** The config (`opencode.jsonc`, agents, commands, skills, plugins) is cloned from [github.com/roborew/opencode-config-v2](https://github.com/roborew/opencode-config-v2) at image build time (`CONFIG_REPO` / `CONFIG_REF`). Your local `~/.config/opencode` checkout is never mounted into the image.
 
@@ -19,7 +19,6 @@ Never add `-v` to `down`. See [Config and image refresh](#config-and-image-refre
 | ---------------------------------- | ------------------------------------------------------------------------- |
 | `opencode-server`                  | `opencode serve` on `0.0.0.0:4097`                                        |
 | `twingate-connector`               | Proxies remote clients to `OPENCODE_FQDN:4097` (default `opencode.local`) |
-| `milvus-standalone` + etcd + minio | Optional vector store (`COMPOSE_PROFILES=milvus`); server indexing is off |
 
 ## Install / quick start
 
@@ -29,14 +28,12 @@ Never add `-v` to `down`. See [Config and image refresh](#config-and-image-refre
 cp .env.example .env
 # Edit .env — at minimum: INFISICAL_PROJECT_ID, INFISICAL_ENV,
 # INFISICAL_DOMAIN (or INFISICAL_API_URL), INFISICAL_CLIENT_ID + INFISICAL_CLIENT_SECRET
-# Optional local config: OPENCODE_APPS_DIR, ports, COMPOSE_PROFILES
+# Optional local config: OPENCODE_APPS_DIR, ports
 ```
 
 Secrets (`TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, API keys, etc.) live in **Infisical**, not in `.env`. Do not bake them into the image; do not permanently `infisical export` / env-pull into `.env`.
 
-2. Optional — reuse existing Milvus data (`DOCKER_VOLUME_DIRECTORY=../milvus` is already the default in `.env.example`).
-
-3. Install the Infisical CLI on the host (once), then build and start via the wrapper:
+2. Install the Infisical CLI on the host (once), then build and start via the wrapper:
 
 **macOS**
 
@@ -59,16 +56,15 @@ Then:
 
 `./scripts/compose.sh` runs `infisical run -- docker compose …` so Compose interpolation (including Twingate) gets secrets at start. Prefer this over bare `docker compose` when using Infisical.
 
-4. Post-compose setup (preflight + projects + hosts):
+3. Post-compose setup (preflight + projects + hosts):
 
 ```bash
 ./scripts/setup.sh
 ```
 
-5. Verify:
+4. Verify:
 
 ```bash
-curl -sf http://localhost:9091/healthz   # when MILVUS_HEALTH_PUBLISH_PORT is set
 curl -sf -u "opencode:YOUR_PASSWORD" http://localhost:4097/api/info
 ```
 
@@ -78,7 +74,7 @@ Connect remotely (with Twingate) at `http://opencode.local:4097`, or point a v2 
 opencode --server http://opencode.local:4097
 ```
 
-**Important:** This image does not install `claude-context-mcp`; the deployment override disables server-side indexing. See [docs/integrations.md](docs/integrations.md#claude-context-indexing) before using host-side indexing.
+**Code indexing:** the Milvus / `claude-context` stack has been removed. A local `code-index` service is being added; see [docs/integrations.md](docs/integrations.md#code-indexing).
 
 ## Management commands
 
@@ -86,7 +82,7 @@ Run everything from this directory.
 
 - **Use `./scripts/compose.sh`, not bare `docker compose`.** The wrapper logs into Infisical from `.env` and then runs `infisical run … docker compose`, so Compose interpolation and the services see project secrets.
 - **Never delete the data volume.** `docker compose down -v` removes `opencode-data` (DB, sessions, MCP auth). Use `./scripts/wipe-opencode-data.sh` when you deliberately want a reset.
-- Service names: `opencode`, `twingate-connector`, `milvus-standalone`, `etcd`, `minio`. Container name: `opencode-server`.
+- Service names: `opencode`, `twingate-connector`. Container name: `opencode-server`.
 
 ### Quick reference
 
@@ -108,7 +104,6 @@ Run everything from this directory.
 | Wipe + Desktop open-project list                    | `./scripts/wipe-opencode-data.sh --yes --desktop`                                           |
 | Performance diagnostics                             | `./scripts/doctor-perf.sh`                                                                  |
 | Server health (host)                                | `curl -sf -u "opencode:${OPENCODE_SERVER_PASSWORD}" http://localhost:4097/api/info`         |
-| Milvus health                                       | `curl -sf http://localhost:9091/healthz`                                                    |
 | Sandbox availability                                | `docker exec opencode-server /usr/local/bin/sandbox probe`                                  |
 
 ### Lifecycle and logs (`scripts/compose.sh`)
@@ -126,12 +121,6 @@ Run everything from this directory.
 ./scripts/compose.sh config                           # render + validate, starts nothing
 ./scripts/compose.sh down                             # keeps opencode-data; NEVER add -v
 
-# Milvus is controlled by COMPOSE_PROFILES in .env (default "milvus"), which the
-# wrapper always re-loads and exports — set it to empty in .env to run without
-# Milvus, then:
-./scripts/compose.sh up -d
-# Or park the vector store but keep the profile enabled in .env:
-./scripts/compose.sh stop milvus-standalone minio etcd
 ```
 
 Requires the Infisical CLI on `PATH` and `INFISICAL_PROJECT_ID`, `INFISICAL_DOMAIN` (or `INFISICAL_API_URL`), plus `INFISICAL_CLIENT_ID`+`INFISICAL_CLIENT_SECRET` or `INFISICAL_TOKEN` in `.env`.
@@ -241,7 +230,7 @@ Expected processes: `infisical` (PID 1), `python3` (delete-guard proxy on 4097),
 ./scripts/doctor-perf.sh
 ```
 
-Reports host `OpenCode.app`/`claude-context` processes, memory pressure, `docker stats`, the `opencode-server` memory/CPU limits, the host `claude-context` disabled flag, and server health. Run it while the desktop is glitching. The process/memory-pressure sections are macOS-oriented; the Docker and health sections work on Ubuntu too.
+Reports host `OpenCode.app` processes, memory pressure, `docker stats`, the `opencode-server` memory/CPU limits, and server health. Run it while the desktop is glitching. The process/memory-pressure sections are macOS-oriented; the Docker and health sections work on Ubuntu too.
 
 ### Sandbox management (Ubuntu + Sysbox only)
 

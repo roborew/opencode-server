@@ -46,10 +46,6 @@ services:
       OPENCODE_SERVER_PASSWORD: ${OPENCODE_SERVER_PASSWORD}
       # v2 hardcodes the basic-auth username to "opencode" — there is no
       # OPENCODE_SERVER_USERNAME; a custom username makes every client 401.
-      MILVUS_ADDRESS: http://milvus-standalone:19530
-      MILVUS_TOKEN: ${MILVUS_TOKEN:-local}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-OpenAI}
       OPENCODE_API_KEY: ${OPENCODE_API_KEY:-}
       GH_ORG: ${GH_ORG:-}
       GH_PROJECT: ${GH_PROJECT:-}
@@ -106,11 +102,6 @@ services:
       - ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:delegated
       - ${OPENCODE_APPS_DIR:-${HOME}/projects}:${OPENCODE_APPS_DIR:-${HOME}/projects}:delegated
     working_dir: ${OPENCODE_APPS_DIR:-${HOME}/projects}
-    depends_on:
-      milvus-standalone:
-        condition: service_healthy
-        # Allow `COMPOSE_PROFILES=` (no milvus) for a lighter stack when not indexing.
-        required: false
     ports:
       # Host + container port 4097 — avoids Kilo/other tools on 4096
       - "${OPENCODE_PUBLISH_PORT:-4097}:4097"
@@ -140,80 +131,6 @@ services:
     # Prefer ./scripts/compose.sh so TWINGATE_* come from Infisical at start.
     sysctls:
       net.ipv4.ping_group_range: "0 2147483647"
-    networks:
-      - opencode-net
-
-  etcd:
-    profiles: ["milvus"]
-    container_name: milvus-etcd
-    restart: unless-stopped
-    image: quay.io/coreos/etcd:v3.5.25
-    environment:
-      ETCD_AUTO_COMPACTION_MODE: revision
-      ETCD_AUTO_COMPACTION_RETENTION: "1000"
-      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
-      ETCD_SNAPSHOT_COUNT: "50000"
-    volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
-    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
-    healthcheck:
-      test: ["CMD", "etcdctl", "endpoint", "health"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    networks:
-      - opencode-net
-
-  minio:
-    profiles: ["milvus"]
-    container_name: milvus-minio
-    restart: unless-stopped
-    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
-    environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
-    ports:
-      - "${MINIO_API_PUBLISH_PORT:-19000}:9000"
-      - "${MINIO_CONSOLE_PUBLISH_PORT:-19001}:9001"
-    volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
-    command: minio server /minio_data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 20s
-      retries: 3
-    networks:
-      - opencode-net
-
-  milvus-standalone:
-    profiles: ["milvus"]
-    container_name: milvus-standalone
-    restart: unless-stopped
-    image: milvusdb/milvus:v2.6.12
-    command: ["milvus", "run", "standalone"]
-    security_opt:
-      - seccomp:unconfined
-    environment:
-      ETCD_ENDPOINTS: etcd:2379
-      MINIO_ADDRESS: minio:9000
-      MQ_TYPE: woodpecker
-    volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-      interval: 30s
-      start_period: 90s
-      timeout: 20s
-      retries: 3
-    ports:
-      - "${MILVUS_PUBLISH_PORT:-19530}:19530"
-      - "${MILVUS_HEALTH_PUBLISH_PORT:-9091}:9091"
-    depends_on:
-      etcd:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
     networks:
       - opencode-net
 

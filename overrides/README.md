@@ -4,18 +4,9 @@ Merged into the image’s cloned `opencode.jsonc` at container start ([`docker/m
 
 The overlay is **v2-native** — every key it uses is the v2 shape. The base config it merges into is [opencode-config-v2](https://github.com/roborew/opencode-config-v2), which is v2-native too, so nothing here depends on v2’s in-memory v1 normalization.
 
-## `claude-context`
+## MCP servers
 
-[`opencode.server.json`](opencode.server.json) declares the `claude-context` MCP server under `mcp.servers` (the v2 layout) as a local server (`"command": ["claude-context-mcp"]`) whose `environment` block holds `{env:...}` placeholders for `OPENAI_API_KEY`, `MILVUS_ADDRESS`, `MILVUS_TOKEN` and `EMBEDDING_PROVIDER`.
-
-That is intentional: **indexing for Desktop/CLI attached to this server runs in the container**, not on the host. The placeholders are resolved by OpenCode at config load — i.e. after the in-container Infisical inject — so the overlay never hardcodes a secret and never pins a stale one.
-
-| Checkout                                         | `mcp.servers.claude-context`                                                                |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------- |
-| Host `~/.config/opencode` (Desktop local config) | Keep it **`"disabled": true`** while using this stack — avoids duplicate MCP process storms |
-| This override (inside `opencode-server`)         | Enabled (no `disabled` flag) — Milvus-backed index                                          |
-
-Local-only OpenCode (no Docker server): ignore these overrides; enable the server in the host config repo instead. Full write-up: [docs/integrations.md — Claude Context indexing](../docs/integrations.md#claude-context-indexing).
+`mcp.servers` in [`opencode.server.json`](opencode.server.json) only adjusts servers the base config already declares (for example, `browse` is disabled because the server has no browser). The former `claude-context` entry was removed together with the Milvus stack; the planned `code-index` service will add its own remote entry here.
 
 ## Permissions
 
