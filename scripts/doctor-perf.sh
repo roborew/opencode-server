@@ -11,16 +11,12 @@ source "${SCRIPT_DIR}/lib/opencode-api.sh"
 
 hr() { printf '\n== %s ==\n' "$1"; }
 
-hr "Host OpenCode / claude-context"
-if /bin/ps -ax -o rss=,pcpu=,command= 2>/dev/null | /usr/bin/grep -E 'OpenCode\.app|claude-context' | /usr/bin/grep -v grep; then
+hr "Host OpenCode processes"
+if /bin/ps -ax -o rss=,pcpu=,command= 2>/dev/null | /usr/bin/grep -E 'OpenCode\.app' | /usr/bin/grep -v grep; then
   :
 else
-  echo "(no OpenCode.app or claude-context processes)"
+  echo "(no OpenCode.app processes)"
 fi
-CC_COUNT="$(/bin/ps -ax -o command= 2>/dev/null | /usr/bin/grep -c '[c]laude-context' || true)"
-CC_RSS="$(/bin/ps -ax -o rss=,command= 2>/dev/null | /usr/bin/grep '[c]laude-context' \
-  | /usr/bin/awk '{s+=$1} END {printf "%.0f", s/1024}' || true)"
-echo "claude-context processes=${CC_COUNT:-0} rss_mb=${CC_RSS:-0}"
 
 hr "Host memory pressure (summary)"
 memory_pressure 2>/dev/null | head -20 || echo "(memory_pressure unavailable)"
@@ -54,39 +50,6 @@ hr "OpenCode caches / worktrees"
 du -sh "${HOME}/.cache/opencode" 2>/dev/null || echo "~/.cache/opencode: (missing)"
 du -sh "${HOME}/.local/share/opencode/worktree" 2>/dev/null || echo "worktree dir: (missing)"
 
-hr "Host claude-context MCP flag"
-HOST_CFG=""
-for candidate in "${HOME}/.config/opencode/opencode.jsonc" "${HOME}/.config/opencode/opencode.json"; do
-  if [[ -f "$candidate" ]]; then
-    HOST_CFG="$candidate"
-    break
-  fi
-done
-if [[ -n "${HOST_CFG}" ]]; then
-  python3 - "$HOST_CFG" "$REPO_ROOT" <<'PYCFG'
-import importlib.util, json, sys
-
-path, repo_root = sys.argv[1], sys.argv[2]
-try:
-    # Parse with the same JSONC rules the server uses (comments + trailing
-    # commas) by reusing merge-config.py — one source of truth.
-    spec = importlib.util.spec_from_file_location("merge_config", f"{repo_root}/docker/merge-config.py")
-    merge_config = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(merge_config)
-    text = open(path, encoding="utf-8").read()
-    d = json.loads(merge_config.strip_trailing_commas(merge_config.strip_jsonc(text)))
-except Exception as exc:
-    # An unreadable config must not abort the remaining diagnostics.
-    print(f"(could not parse {path}: {exc})")
-    raise SystemExit(0)
-cc = (d.get("mcp") or {}).get("servers", {}).get("claude-context", {})
-print("disabled =", cc.get("disabled", False))
-print("(keep true while Desktop uses Docker; the server MCP is separate)")
-PYCFG
-else
-  echo "(no ~/.config/opencode/opencode.json[c])"
-fi
-
 hr "Server health (localhost)"
 load_env || true
 if [[ -n "${OPENCODE_SERVER_PASSWORD:-}" ]]; then
@@ -98,8 +61,6 @@ fi
 
 hr "Hints"
 cat <<'EOF'
-- Many host claude-context processes → quit Desktop, pkill -f claude-context-mcp, set mcp.servers.claude-context.disabled=true in ~/.config/opencode/opencode.json(c)
 - After CONFIG_REPO/CONFIG_REF changes → docker compose build --no-cache opencode && docker compose up -d opencode (never down -v)
-- Idle without indexing → COMPOSE_PROFILES= docker compose up -d  (omit milvus profile) or: docker compose stop milvus-standalone milvus-minio etcd
 - Full doctor after a freeze: run this script while the UI is glitching
 EOF

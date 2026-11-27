@@ -20,6 +20,8 @@
 #     the compose model renders the preflight fixture client-side (DOCKER_HOST
 #     points at a dead endpoint), the uid/gid round-trips through a mounted
 #     worktree-shaped path, and git is present
+#   - retirement guard: no Milvus / claude-context references in runtime
+#     files and no Milvus-stack service in the rendered compose model
 #
 # No Docker daemon is required for the static and unit tests; checks whose
 # prerequisites are missing record a visible SKIP (never a PASS), and the
@@ -257,6 +259,21 @@ test_image_ships_the_preflight_toolchain() {
     || fail "${work}/wt-shape/created-by-test owned by ${owner}, expected $(id -u):$(id -g)"
 }
 
+# The Milvus / claude-context stack was retired (ADR 0017 in opencode-config-v2):
+# no runtime file may bring it back, and the rendered model has no such service.
+test_retired_milvus_stack_stays_removed() {
+  local hits
+  hits="$(cd "$REPO_ROOT" && grep -rniE 'milvus|claude-context|etcd|minio|EMBEDDING_PROVIDER' \
+    docker-compose.yml docker-compose.sandbox.yml .env.example docker/ overrides/opencode.server.json scripts/ 2>/dev/null || true)"
+  [[ -z "$hits" ]] || fail "retired Milvus/claude-context references remain:"$'\n'"$hits"
+  docker_compose_available || skip "docker/jq not on host - static grep passed, compose render skipped"
+  local model
+  model="$(render_compose docker-compose.yml)" \
+    || fail "docker compose config failed to render the base file"
+  jq -e '[.services | keys[] | select(test("milvus|etcd|minio"))] | length == 0' <<<"$model" >/dev/null \
+    || fail "rendered compose still defines a Milvus-stack service: $(jq -c '.services | keys' <<<"$model")"
+}
+
 run_test "base compose grants the opencode service no daemon access" test_base_compose_grants_no_daemon_access
 run_test "sandbox overlay stays a socket control plane with no privileges" test_sandbox_overlay_is_socket_control_plane_only
 run_test "ownership guard passes when the worktree owner matches" test_ownership_guard_passes_when_owner_matches
@@ -265,6 +282,7 @@ run_test "ownership guard fails loudly on a foreign-owned worktree root" test_ow
 run_test "entrypoint wires the ownership guard" test_entrypoint_wires_the_ownership_guard
 run_test "docker tool pins are forwarded to the image build" test_docker_tool_pins_are_forwarded_to_the_image_build
 run_test "image ships the client-side preflight toolchain" test_image_ships_the_preflight_toolchain
+run_test "retired Milvus stack stays removed" test_retired_milvus_stack_stays_removed
 
 echo
 printf 'Result: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"

@@ -34,7 +34,6 @@ run_preflight() {
   check_workspace_root_ownership
   check_repo_envs
   check_opencode_data_volume
-  check_milvus
   check_gh_auth
   check_providers
   check_twingate_connector
@@ -853,21 +852,6 @@ check_worktree_mount() {
   preflight_record ok "worktree mount ${host_wt} → ${container_wt} (${count} entries)"
 }
 
-check_milvus() {
-  load_env 2>/dev/null || return
-  local port="${MILVUS_HEALTH_PUBLISH_PORT:-9091}"
-  port="${port##*:}"
-  if curl -sf "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
-    preflight_record ok "milvus healthz (localhost:${port})"
-    return
-  fi
-  if container_running && docker_exec curl -sf http://localhost:9091/healthz >/dev/null 2>&1; then
-    preflight_record ok "milvus healthz (inside network)"
-    return
-  fi
-  preflight_record fail "milvus not healthy" "docker compose up -d && check milvus services"
-}
-
 check_gh_auth() {
   if ! container_running; then
     return
@@ -1016,29 +1000,11 @@ for info in sorted(data, key=lambda i: (i.get('name') or '')):
           "configure the upstream authentication in MCPJungle, then reconnect mcp/${name}"
         ;;
       *)
-        if [[ "$name" == "claude-context" ]]; then
-          check_claude_context "$status" "$name"
-        else
-          preflight_record warn "mcp/${name}: ${status}"
-        fi
+        preflight_record warn "mcp/${name}: ${status}"
         ;;
     esac
   done <<< "$mcp_report"
 
-}
-
-check_claude_context() {
-  local status="$1"
-  local name="$2"
-  local openai_key
-  openai_key="$(container_env_get OPENAI_API_KEY)"
-  if [[ -z "$openai_key" ]]; then
-    preflight_record warn "mcp/${name}: OPENAI_API_KEY not set in container"
-  elif [[ "$status" =~ ^(connected|ready|ok)$ ]]; then
-    preflight_record ok "mcp/${name}: ${status}"
-  else
-    preflight_record warn "mcp/${name}: ${status} (check OPENAI_API_KEY in .env or Infisical, and Milvus)"
-  fi
 }
 
 print_preflight_json() {
