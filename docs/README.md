@@ -1,12 +1,12 @@
 # Docs
 
-Guides for the OpenCode + Twingate + Milvus stack. Start with the root [README](../README.md) for install, then use these when you need detail.
+Guides for the OpenCode + Twingate stack. Start with the root [README](../README.md) for install, then use these when you need detail.
 
 | Doc                                                                                  | Contents                                                                                                                                            |
 | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [setup.md](setup.md)                                                                 | `setup.sh` phases, project modes, workspace mounts, worktrees, config updates                                                                       |
 | [environment.md](environment.md)                                                     | `.env` variables, Infisical bootstrap                                                                                                               |
-| [access.md](access.md)                                                               | Twingate resource, ports, `/etc/hosts`, localhost rewrite, sharing Milvus                                                                           |
+| [access.md](access.md)                                                               | Twingate resource, ports, `/etc/hosts`, localhost rewrite                                                                           |
 | [integrations.md](integrations.md)                                                   | Claude Context, GitHub PAT, preflight, managed MCP upstreams                                                                                        |
 | [sandbox.md](sandbox.md)                                                             | Optional Sysbox sibling sandboxes (Ubuntu), self-contained Caddy + host cloudflared review URLs, oc-sandbox mountpoint preflight image requirements |
 | [troubleshooting.md](troubleshooting.md)                                             | Common failures and fixes                                                                                                                           |

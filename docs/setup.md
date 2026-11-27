@@ -5,7 +5,7 @@ After `docker compose up`, run [`scripts/setup.sh`](../scripts/setup.sh). It nev
 ## Phases
 
 1. **Sandbox** — auto. If `OPENCODE_SANDBOX_MODE=auto|on` (from Infisical or host `.env`), setup probes the host for Sysbox, builds the opencode image and sibling image, and recreates the stack with the `docker-compose.sandbox.yml` overlay. Re-runs skip when the stack is already enabled. Set `OPENCODE_SANDBOX_SKIP_AUTO_BUILD=1` to opt out. No extra build steps for the operator — see [docs/sandbox.md](sandbox.md) for the one-time Sysbox install on the host.
-2. **Preflight** — env, container health, workspace mount, Milvus, `gh` auth, providers, enabled MCPs
+2. **Preflight** — env, container health, workspace mount, `gh` auth, providers, enabled MCPs
 3. **Projects (amend)** — choose the desired set (re-runs show `[on]`/`[off]`); resolve and verify adds, archive drops and delete their sessions. Per-repo sandbox `.env` setup is optional and defaults to skip
 4. **Host bootstrap** — `/etc/hosts` for `OPENCODE_FQDN`, print web deep links
 

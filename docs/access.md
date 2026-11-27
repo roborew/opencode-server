@@ -86,17 +86,6 @@ Manual hosts (if you skipped the prompt):
 sudo sh -c 'echo "127.0.0.1 opencode.local" >> /etc/hosts'
 ```
 
-## Local CLI + shared Milvus
-
-When this stack is running, Milvus is published on `localhost:19530`. Your local shell can keep:
-
-```bash
-export MILVUS_ADDRESS=http://localhost:19530
-export MILVUS_TOKEN=local
-```
-
-The Docker server does not enable Claude Context and does not use this vector index; it is available only for host-side indexing or a future deliberate re-enable. Keep host `claude-context` disabled when Desktop attaches to this server — see [integrations.md](integrations.md#claude-context-indexing).
-
 ## Localhost URLs inside Docker
 
 Inside the container, `localhost` / `127.0.0.1` is the **container**, not your Mac or droplet. Shared links like `http://localhost:3000` would otherwise 404 when OpenCode `webfetch` or shell `curl` runs in Docker.

@@ -8,7 +8,7 @@
 
 ```bash
 # Is the stack up?
-docker ps --format 'table {{.Names}}\t{{.Status}}' | grep -E 'opencode|milvus|twingate'
+docker ps --format 'table {{.Names}}\t{{.Status}}' | grep -E 'opencode|twingate'
 docker exec opencode-server curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4097/api/info  # 401 = healthy, needs auth
 docker inspect opencode-server --format 'status={{.State.Status}} health={{if .State.Health}}{{.State.Health.Status}}{{end}} oom={{.State.OOMKilled}}'
 
@@ -35,13 +35,12 @@ If `/api/info` returns anything other than `401` (or `200` with auth) from insid
 
 ## 1. What this repo is
 
-A Docker Compose stack that runs a single headless `opencode serve` instance behind a worktree delete-guard proxy, with optional Twingate remote access and an optional Milvus/etcd/minio vector store. Server-side `claude-context` indexing is disabled and its binary is not installed.
+A Docker Compose stack that runs a single headless `opencode serve` instance behind a worktree delete-guard proxy, with optional Twingate remote access. The Milvus / `claude-context` indexing stack was removed; a local `code-index` service replaces it (see `docs/integrations.md`).
 
 | Service                                | Image                             | Role                                                                                  |
 | -------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------- |
 | `opencode-server`                      | built from `./Dockerfile`         | `opencode serve` (real port 4098) fronted by Python delete-guard proxy (exposed 4097) |
 | `twingate-connector`                   | `twingate/connector:1`            | Remote-access connector (resource = `OPENCODE_FQDN:4097`)                             |
-| `milvus-standalone` + `etcd` + `minio` | official images, profile `milvus` | Optional vector store; server-side `claude-context` is disabled                       |
 
 **Container internals** (PID 1 inside `opencode-server` is `infisical`, which execs into `opencode-serve-guarded.sh`, which `setsid`s `opencode serve --port 4098` then `exec`s into `python3 worktree-delete-guard.py` listening on 4097). See `docker/entrypoint.sh:235-285` and `docker/opencode-serve-guarded.sh`.
 
@@ -97,7 +96,6 @@ A Docker Compose stack that runs a single headless `opencode serve` instance beh
 | Server DB/auth is poisoned / migrating path scheme           | `./scripts/wipe-opencode-data.sh --yes` (then `./scripts/setup.sh`)                                                                               |
 | Desktop host freezes / high RAM                              | `./scripts/doctor-perf.sh` while glitching                                                                                                        |
 | `opencode` was OOM-killed                                    | Inspect `journalctl -k --no-pager                                                                                                                 | grep -i 'Killed process.*opencode'`; the default 8 GiB `OPENCODE_MEMORY_LIMIT` contains the impact and Docker restarts the service |
-| Just want the stack (no Milvus)                              | `./scripts/compose.sh up -d --build` with `COMPOSE_PROFILES=` empty in `.env`                                                                     |
 
 ---
 
@@ -112,7 +110,7 @@ Two injection points, both **runtime only** (never build-time). Preflight verifi
 
 **`.env` holds**: Infisical bootstrap (`INFISICAL_PROJECT_ID`, `INFISICAL_DOMAIN`, `INFISICAL_CLIENT_ID`+`SECRET` or `INFISICAL_TOKEN`), host-local `OPENCODE_UID`/`OPENCODE_GID`, optional non-secret config (ports, `OPENCODE_FQDN`).
 
-**Infisical holds (preferred)**: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, `MCPJUNGLE_TOKEN`, `GH_TOKEN`/`GH_ORG`/`GH_PROJECT`, `GIT_USER_NAME`/`GIT_USER_EMAIL`, `OPENCODE_APPS_DIR`, `OPENCODE_WORKTREES_DIR`.
+**Infisical holds (preferred)**: `TWINGATE_*`, `OPENCODE_SERVER_PASSWORD`, `OPENCODE_API_KEY`, `MCPJUNGLE_TOKEN`, `GH_TOKEN`/`GH_ORG`/`GH_PROJECT`, `GIT_USER_NAME`/`GIT_USER_EMAIL`, `OPENCODE_APPS_DIR`, `OPENCODE_WORKTREES_DIR`.
 
 Set `INFISICAL_USE_CLI=false` to bypass in-container Infisical (host `.env` then becomes authoritative — only do this for tests).
 
@@ -204,7 +202,7 @@ If `sandbox probe` returns `"available": false` (or exit 2, reason `SANDBOX_UNAV
 docker exec -u "${OPENCODE_UID:-1000}:${OPENCODE_GID:-1000}" opencode-server <cmd>
 
 # Inspect what the running container actually sees (runtime secrets land here):
-docker exec opencode-server env | grep -E '^(OPENCODE|GH_|OPENAI|MCPJUNGLE|OC_SANDBOX|TWINGATE|MILVUS)'
+docker exec opencode-server env | grep -E '^(OPENCODE|GH_|MCPJUNGLE|OC_SANDBOX|TWINGATE)'
 
 # gh auth status (uses GH_TOKEN injected by Infisical or compose env_file):
 docker exec opencode-server gh auth status
@@ -214,8 +212,6 @@ docker exec opencode-server find "$OPENCODE_APPS_DIR" -name .git -type d -prune
 ```
 
 **Do not run `opencode mcp auth` in this container.** Managed upstreams (Cloudflare, GitHub, etc.) are registered and refreshed in MCPJungle; OpenCode only carries the bearer. If an MCP shows `needs_auth`, repair the upstream in MCPJungle and reconnect.
-
-**The server image does not install `claude-context`** and the deployment override disables it. Do not enable host `claude-context` while Desktop attaches to this server: dozens of `npx` processes can freeze the UI. See `docs/integrations.md` and `./scripts/doctor-perf.sh`.
 
 ---
 
@@ -233,7 +229,6 @@ From `scripts/lib/preflight.sh` — the source of truth:
 - `OPENCODE_WORKTREES_DIR` mounted
 - Per-repo `.env` keys populated (when sandbox mode is on)
 - `opencode-data` volume health
-- Milvus reachable + `OPENAI_API_KEY` set (when `COMPOSE_PROFILES=milvus`)
 - `gh auth status` + fine-grained PAT capabilities
 - Provider keys (`OPENCODE_API_KEY`, `MCPJUNGLE_TOKEN` etc.)
 - Twingate connector reachability
@@ -249,7 +244,6 @@ Failures block `./scripts/setup.sh projects ...` unless `--force`.
 | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Edited `overrides/opencode.server.json` but server still serves the old config                          | Overlay is baked into the image                                                                                                                                                                           | `./scripts/compose.sh build --no-cache opencode && ./scripts/compose.sh up -d opencode`                                                                                                                                                                                |
 | Pushed new skill to `CONFIG_REF` branch, not visible in container                                       | Config is cloned at build, not at run                                                                                                                                                                     | Same as above                                                                                                                                                                                                                                                          |
-| `claude-context` not finding anything                                                                   | Expected on the server — the image omits the binary and the override disables the MCP; a host copy may also still be running                                                                              | Keep the host server disabled for Desktop-on-server use; follow the deliberate re-enable path in `docs/integrations.md` if server-side indexing is required                                                                                                            |
 | Every client 401s                                                                                       | v2 hardcodes the basic-auth username to `opencode` — remove any `OPENCODE_SERVER_USERNAME` from `.env` / Infisical                                                                                        | Re-attach clients with password only; username is not configurable                                                                                                                                                                                                     |
 | 404 on a `localhost:NNNN` link from the agent                                                           | Container `localhost` ≠ host `localhost`                                                                                                                                                                  | `LOCALHOST_REWRITE=1` (default) rewrites to `host.docker.internal`; ensure the target service binds `*******` on the host                                                                                                                                              |
 | Host can't resolve `OPENCODE_FQDN`                                                                      | No `/etc/hosts` entry                                                                                                                                                                                     | `./scripts/setup.sh bootstrap --yes`                                                                                                                                                                                                                                   |

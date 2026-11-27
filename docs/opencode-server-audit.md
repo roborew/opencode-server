@@ -97,11 +97,10 @@ Re-run this before any future OpenCode version bump.
 |---|---|---|---|
 | OpenCode CLI | `2.3.0` via the v2 installer (`OPENCODE_VERSION` build arg) | **2.3.0** | Was the core issue of this audit; now pinned in the Dockerfile |
 | Infisical CLI | 0.43.84 | 0.44.10 (0.45.x rolling) | Note: Infisical moved its Linux package repo off Cloudsmith to `artifacts-cli.infisical.com` (Sep 2026) — your Dockerfile downloads the `.deb` from GitHub Releases, so it's unaffected ([Infisical/cli](https://github.com/Infisical/cli)) |
-| Milvus | v2.6.12 | v2.6.27 (3.0.6 exists) | Stay on 2.6.x — claude-context compatibility; 3.0 is a new architecture ([Milvus releases](https://github.com/milvus-io/milvus/releases)) |
+| Milvus / etcd / minio | — | — | Removed 2026-11-27 with `claude-context`; replaced by the planned `code-index` service (opencode-config-v2 ADR 0017) |
 | yq | v4.53.2 | v4.53.x | Current; fine |
 | Node.js | 24.22.2 (exact) | 26 LTS (Lithium) | Pinned exact Node 24: the config repo requires `engines.node >= 24`, and the unused `claude-context` preinstall that failed against Node 24 V8 headers was removed |
 | Ubuntu base | 24.04 | 26.04 LTS | Leave as-is; Sysbox 0.7.0 is verified on 24.04, and the base image is independent of the host runtime |
-| etcd / minio | v3.5.25 / RELEASE.2024-12-18 | newer available | Only used by the optional Milvus profile; safe to bump on the next Milvus upgrade, not urgent |
 
 ## Sources
 
@@ -109,4 +108,4 @@ Re-run this before any future OpenCode version bump.
 - [Migrate from V1](https://dev.opencode.ai/docs/migrate-v1/) · [v2 OpenAPI](https://opencode.ai/v2/openapi.json) · [Web/serve docs](https://opencode.ai/docs/cli/web/)
 - [anomalyco/opencode#45856 — username hardcoded in v2](https://github.com/anomalyco/opencode/issues/45856) · [#58051 — desktop v2 vs old servers](https://github.com/anomalyco/opencode/issues/58051)
 - [Railway cloud agents guide](https://docs.railway.com/cloud-agents/opencode.md) · [openwork v2 adapter notes](https://github.com/different-ai/openwork/blob/dev/docs/opencode-v2-parallel-lane.md)
-- [Infisical CLI releases](https://github.com/Infisical/cli/releases) · [Milvus releases](https://github.com/milvus-io/milvus/releases)
+- [Infisical CLI releases](https://github.com/Infisical/cli/releases)

@@ -1,19 +1,12 @@
 # Integrations
 
-## Claude Context indexing
+## Code indexing
 
-Semantic indexing is optional — OpenCode works without it; it only speeds discovery. The `opencode-server` image **does not install `claude-context-mcp`**, and [`overrides/opencode.server.json`](../overrides/opencode.server.json) explicitly disables the registered server. The optional Milvus profile remains available for host-side or future indexing, but this stack does not run Claude Context inside the container.
+OpenCode works without an index; an index only speeds up discovery and cuts the tokens spent on repeated `grep` + `read` round-trips.
 
-| Mode                                                   | Where indexing runs              | What to set                                                                                                                                                                                              |
-| ------------------------------------------------------ | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Desktop / CLI → this Docker server** (default)       | Not enabled                      | Leave host `mcp.servers.claude-context.disabled` **`true`** in `~/.config/opencode/opencode.json(c)`. The deployed override keeps the server definition disabled so the missing binary is never invoked. |
-| **Local only** (no Docker server; Desktop/CLI on host) | Host MCP in `~/.config/opencode` | Enable the `claude-context` server in that checkout's `opencode.json(c)` (`mcp.servers.claude-context`). The config repo is [opencode-config-v2](https://github.com/roborew/opencode-config-v2).         |
+The earlier Milvus / `claude-context` stack (etcd, minio, Milvus and an OpenAI embedding key) has been removed. Its MCP could not build on Node 24 and it was already disabled. The replacement is a local `code-index` service: [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) in its own container, reached by OpenCode as a remote MCP over the Compose network, with no cloud calls and no API key. The design and the spike results live in opencode-config-v2 (`docs/plan/spec-code-index.md`, `docs/adr/0017-code-index-spike.md`). Until it lands, the stack runs no index service.
 
-**Why it is disabled:** `@zilliz/claude-context-mcp` `0.1.16` pulls `tree-sitter@0.21.1`, which fails to compile against Node 24 V8 headers and has no usable prebuilt binding. The latest stable MCP/core release has the same dependency, and `0.1.17-rc.0` still requires `tree-sitter@^0.21.1`. Since server-side indexing is unused, the image removes the preinstall rather than pinning Node 22 or carrying an unverified transitive override.
-
-Re-enabling server-side indexing requires restoring a Node-24-compatible `claude-context-mcp` installation in the image and removing the `disabled` flag. Validate the MCP at runtime before relying on it.
-
-Diagnose freezes with `./scripts/doctor-perf.sh`.
+Diagnose host freezes with `./scripts/doctor-perf.sh`.
 
 ## GitHub token (fine-grained PAT)
 
@@ -53,7 +46,7 @@ Checks print `[ok]`, `[warn]`, or `[fail]` with fix hints. Failures block projec
 | Area       | What it checks                                                                                       |
 | ---------- | ---------------------------------------------------------------------------------------------------- |
 | Env        | `.env`, `OPENCODE_SERVER_PASSWORD`, optional keys                                                    |
-| Stack      | `opencode-server` running, `/api/info`, workspace mount, Milvus                                      |
+| Stack      | `opencode-server` running, `/api/info`, workspace mount                                              |
 | GitHub     | `gh auth status`; fine-grained via capability checks, or classic scopes; `GH_ORG` + repo list access |
 | Providers  | `OPENCODE_API_KEY` / `MCPJUNGLE_TOKEN` or connected providers                                        |
 | MCPs       | `GET /api/mcp` for each enabled server (disabled servers are skipped)                                |
@@ -62,4 +55,4 @@ Checks print `[ok]`, `[warn]`, or `[fail]` with fix hints. Failures block projec
 
 `mcpjungle` is the sole gateway for managed upstreams, including Cloudflare API and Cloudflare Docs. OpenCode only carries the MCPJungle bearer token; upstream credentials and any OAuth grants are registered, stored, and refreshed in MCPJungle.
 
-`claude-context` is the optional local Milvus-backed indexing MCP. This image does not include its binary and the deployment override disables it; do not run `opencode mcp auth` in this container. For managed upstreams, repair the upstream registration or authorization in MCPJungle, then reconnect or restart the OpenCode service.
+Do not run `opencode mcp auth` in this container. For managed upstreams, repair the upstream registration or authorization in MCPJungle, then reconnect or restart the OpenCode service.
