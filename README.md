@@ -18,6 +18,7 @@ Never add `-v` to `down`. See [Config and image refresh](#config-and-image-refre
 | Service                            | Role                                                                      |
 | ---------------------------------- | ------------------------------------------------------------------------- |
 | `opencode-server`                  | `opencode serve` on `0.0.0.0:4097`                                        |
+| `code-index`                       | Local code graph + search MCP for agents; internal network only (see [docs/integrations.md](docs/integrations.md#code-indexing)) |
 | `twingate-connector`               | Proxies remote clients to `OPENCODE_FQDN:4097` (default `opencode.local`) |
 
 ## Install / quick start
@@ -230,7 +231,7 @@ Expected processes: `infisical` (PID 1), `python3` (delete-guard proxy on 4097),
 ./scripts/doctor-perf.sh
 ```
 
-Reports host `OpenCode.app` processes, memory pressure, `docker stats`, the `opencode-server` memory/CPU limits, and server health. Run it while the desktop is glitching. The process/memory-pressure sections are macOS-oriented; the Docker and health sections work on Ubuntu too.
+Reports host `OpenCode.app` processes, memory pressure, `docker stats`, the `opencode-server` memory/CPU limits, code-index memory and cache size, and server health. Run it while the desktop is glitching. The process/memory-pressure sections are macOS-oriented; the Docker and health sections work on Ubuntu too.
 
 ### Sandbox management (Ubuntu + Sysbox only)
 
@@ -273,7 +274,7 @@ TEST_FILTER=ownership bash tests/image-preflight.sh   # run a subset by name sub
 | Setup script, projects, workspaces                                                    | [docs/setup.md](docs/setup.md)                     |
 | Environment variables & Infisical                                                     | [docs/environment.md](docs/environment.md)         |
 | Twingate, ports, hosts, localhost rewrite                                             | [docs/access.md](docs/access.md)                   |
-| Claude Context, GitHub, managed MCP upstreams                                         | [docs/integrations.md](docs/integrations.md)       |
+| code-index, GitHub, managed MCP upstreams                                             | [docs/integrations.md](docs/integrations.md)       |
 | Sysbox sibling sandboxes (Ubuntu), oc-sandbox mountpoint preflight image requirements | [docs/sandbox.md](docs/sandbox.md)                 |
 | Troubleshooting                                                                       | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | Docs index                                                                            | [docs/README.md](docs/README.md)                   |
@@ -292,6 +293,7 @@ TEST_FILTER=ownership bash tests/image-preflight.sh   # run a subset by name sub
 ├── scripts/lib/                 # preflight, API client, repo-env, sandbox-enable helpers
 ├── scripts/sandbox/             # sandbox CLI + build/smoke
 ├── docker/                      # entrypoint, merge-config, plugins, worktree-ownership guard
+│   └── code-index/              # code-index image: codebase-memory-mcp + mcp-proxy + refresh loop
 ├── tests/                       # setup regression + image preflight tests
 ├── docs/
 ├── overrides/opencode.server.json

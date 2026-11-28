@@ -20,6 +20,9 @@
 #     the compose model renders the preflight fixture client-side (DOCKER_HOST
 #     points at a dead endpoint), the uid/gid round-trips through a mounted
 #     worktree-shaped path, and git is present
+#   - code-index: pinned binary + hash-locked bridge + non-root (static),
+#     the entrypoint token guard (unit), and an image test that checks auth,
+#     tools/list, read-only indexing and search inside the built container
 #   - retirement guard: no Milvus / claude-context references in runtime
 #     files and no Milvus-stack service in the rendered compose model
 #
@@ -87,8 +90,9 @@ render_compose() {
   local dir="$TMP_ROOT/render-$$"
   mkdir -p "$dir"
   cp "${REPO_ROOT}/docker-compose.yml" "${REPO_ROOT}/docker-compose.sandbox.yml" "$dir/"
+  mkdir -p "$dir/docker" && cp -R "${REPO_ROOT}/docker/code-index" "$dir/docker/"
   # Stub every var the base file interpolates without a default.
-  printf 'OPENCODE_SERVER_PASSWORD=test-only\n' >"$dir/.env"
+  printf 'OPENCODE_SERVER_PASSWORD=test-only\nCODE_INDEX_TOKEN=test-only-token-test-only-token-00\n' >"$dir/.env"
   local f
   for f in $files; do compose_args+=(-f "$dir/$f"); done
   (cd "$dir" && docker compose -p "imgpreflight$$" "${compose_args[@]}" config --format json)
@@ -274,6 +278,215 @@ test_retired_milvus_stack_stays_removed() {
     || fail "rendered compose still defines a Milvus-stack service: $(jq -c '.services | keys' <<<"$model")"
 }
 
+CODE_INDEX_DIR="${REPO_ROOT}/docker/code-index"
+
+# The code-index image pins its binary (version + per-arch SHA-256), installs the
+# bridge only from a hash-locked lock file, and runs as a non-root user.
+test_code_index_image_pins_are_strict() {
+  local df="${CODE_INDEX_DIR}/Dockerfile" req="${CODE_INDEX_DIR}/requirements.txt"
+  [[ -f "$df" && -f "$req" ]] || fail "docker/code-index/Dockerfile or requirements.txt missing"
+  grep -qE '^ARG CBM_VERSION=[0-9]+\.[0-9]+\.[0-9]+$' "$df" || fail "CBM_VERSION is not pinned to an exact release"
+  grep -qE '^ARG CBM_SHA256_AMD64=[0-9a-f]{64}$' "$df" || fail "no amd64 SHA-256 pin"
+  grep -qE '^ARG CBM_SHA256_ARM64=[0-9a-f]{64}$' "$df" || fail "no arm64 SHA-256 pin"
+  grep -q 'sha256sum -c' "$df" || fail "the downloaded tarball is not checksum-verified"
+  grep -q -- '--require-hashes' "$df" || fail "pip install does not use --require-hashes"
+  grep -qE '^USER cbm$' "$df" || fail "image does not switch to the non-root cbm user"
+  grep -qE '^mcp-proxy==[0-9]+\.[0-9]+\.[0-9]+ ' "$req" || fail "mcp-proxy is not pinned in requirements.txt"
+  local pins hashed
+  pins="$(grep -cE '^[A-Za-z0-9_.-]+==' "$req")"
+  hashed="$(awk '/^[A-Za-z0-9_.-]+==/{p=$1} /--hash=sha256:/{if(p){h[p]=1}} END{print length(h)}' "$req")"
+  [[ "$pins" -gt 0 && "$pins" == "$hashed" ]] || fail "every requirement needs a --hash (pins=${pins}, hashed=${hashed})"
+}
+
+# The entrypoint refuses to start without a usable bearer token, before it runs
+# anything else.
+test_code_index_entrypoint_requires_a_token() {
+  local ep="${CODE_INDEX_DIR}/entrypoint.sh" out
+  out="$(env -i PATH=/usr/bin:/bin sh "$ep" 2>&1)" && fail "entrypoint started without CODE_INDEX_TOKEN"
+  assert_contains "$out" "CODE_INDEX_TOKEN is not set"
+  out="$(env -i PATH=/usr/bin:/bin CODE_INDEX_TOKEN=short sh "$ep" 2>&1)" && fail "entrypoint accepted a short token"
+  assert_contains "$out" "at least 32 characters"
+}
+
+# Build the image and, with code mounted read-only and the root filesystem
+# read-only, check auth, the tool surface, indexing and search end to end.
+test_code_index_image_serves_authenticated_mcp() {
+  docker info >/dev/null 2>&1 || skip "no Docker daemon on the host - cannot build code-index"
+  local tag="code-index:preflight-test" name="code-index-preflight-$$"
+  echo "    building docker/code-index (first build can take a minute)"
+  docker build -q -t "$tag" "$CODE_INDEX_DIR" >/dev/null || fail "docker build docker/code-index failed"
+
+  # A real git repo at the same path inside and out, as in production.
+  local repo="${TMP_ROOT}/code-index-repo"
+  cp -R "${REPO_ROOT}/tests/fixtures/code-index-repo" "$repo"
+  if ! { git -C "$repo" init -q && git -C "$repo" add -A \
+    && git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qm fixture; }; then
+    fail "could not create the fixture git repo"
+  fi
+  chmod -R a+rX "$repo"
+
+  local token
+  token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  docker run -d --name "$name" --read-only --tmpfs /tmp \
+    -e CODE_INDEX_TOKEN="$token" \
+    -v "${repo}:${repo}:ro" -v "${REPO_ROOT}/tests/code-index-smoke.py:/smoke.py:ro" \
+    "$tag" >/dev/null || fail "code-index container did not start"
+  # Runs in run_test's subshell, so this EXIT trap only cleans up the container;
+  # the suite-level trap still removes TMP_ROOT.
+  # shellcheck disable=SC2064  # expand now: the trap must remove this container
+  trap "docker rm -fv '$name' >/dev/null 2>&1" EXIT
+
+  local health="" i
+  for i in $(seq 1 60); do
+    health="$(docker inspect -f '{{.State.Health.Status}}' "$name" 2>/dev/null || true)"
+    [[ "$health" == healthy || "$health" == unhealthy ]] && break
+    sleep 1
+  done
+  [[ "$health" == healthy ]] || fail "code-index not healthy after ${i}s (${health}):"$'\n'"$(docker logs "$name" 2>&1 | tail -20)"
+
+  local out
+  out="$(docker exec "$name" python3 -I /smoke.py "$repo" compute_invoice_total 2>&1)" \
+    || fail "in-container MCP checks failed:"$'\n'"$out"
+  printf '    %s\n' "${out//$'\n'/$'\n'    }"
+  [[ "$(docker exec "$name" id -u)" != 0 ]] || fail "code-index runs as root"
+  docker logs "$name" 2>&1 | grep -qF "$token" && fail "the bearer token appears in container logs"
+  [[ -z "$(git -C "$repo" status --porcelain)" ]] || fail "indexing wrote into the read-only repo"
+  docker rm -fv "$name" >/dev/null
+}
+
+# The prune guard, without Docker: a missing root under an empty parent (a
+# mount whose host source is absent) is never deleted; one with siblings is,
+# and a failing project does not stop the others.
+test_code_index_refresh_prune_guard() {
+  local work="${TMP_ROOT}/prune-guard"
+  mkdir -p "${work}/empty-mount" "${work}/live/sibling" "${work}/ok"
+  python3 -I - "${REPO_ROOT}/docker/code-index/refresh.py" "$work" <<'PYGUARD' || fail "refresh prune guard misbehaved"
+import importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("refresh", sys.argv[1])
+r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+work = sys.argv[2]
+subprocess.run(["git", "init", "-q", f"{work}/ok"], check=True)
+subprocess.run(["git", "-C", f"{work}/ok", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+r.log = lambda msg: None
+class Fake:
+    def __init__(self): self.calls = []
+    def open(self): pass
+    def close(self): pass
+    def projects(self):
+        return [{"name": "boom", "root_path": f"{work}/ok"},
+                {"name": "under-empty", "root_path": f"{work}/empty-mount/gone"},
+                {"name": "removed", "root_path": f"{work}/live/gone"},
+                {"name": "ok", "root_path": f"{work}/ok"}]
+    def call(self, tool, args):
+        self.calls.append((tool, args.get("name") or args.get("project")))
+        if args.get("name") == "boom":
+            raise RuntimeError("index_repository failed: resource limit")
+        return "{}"
+c = Fake(); seen = {}
+r.cycle(c, seen)
+assert ("delete_project", "under-empty") not in c.calls, c.calls
+assert ("delete_project", "removed") in c.calls, c.calls
+assert ("index_repository", "ok") in c.calls and "ok" in seen, (c.calls, seen)
+assert "boom" not in seen, seen
+PYGUARD
+}
+
+# SC 4 / SC 5c: the refresh loop picks up a host edit to an indexed repo and
+# prunes a removed worktree (its parent dir is still mounted). Short interval.
+test_code_index_refreshes_edits_and_prunes_removed_worktrees() {
+  docker info >/dev/null 2>&1 || skip "no Docker daemon on the host - cannot build code-index"
+  local tag="code-index:preflight-test" name="code-index-refresh-$$"
+  docker build -q -t "$tag" "$CODE_INDEX_DIR" >/dev/null || fail "docker build docker/code-index failed"
+
+  local worktrees="${TMP_ROOT}/refresh-worktrees" repo
+  repo="${worktrees}/slice-1-billing"
+  mkdir -p "${worktrees}/slice-2-other"  # a sibling: the parent is a live mount
+  cp -R "${REPO_ROOT}/tests/fixtures/code-index-repo" "$repo"
+  if ! { git -C "$repo" init -q && git -C "$repo" add -A \
+    && git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qm fixture; }; then
+    fail "could not create the fixture git repo"
+  fi
+  chmod -R a+rwX "$worktrees"
+
+  local token
+  token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  docker run -d --name "$name" --read-only --tmpfs /tmp \
+    -e CODE_INDEX_TOKEN="$token" -e CODE_INDEX_REFRESH_SECONDS=3 \
+    -v "${worktrees}:${worktrees}:ro" -v "${REPO_ROOT}/tests/code-index-smoke.py:/smoke.py:ro" \
+    "$tag" >/dev/null || fail "code-index container did not start"
+  # shellcheck disable=SC2064  # expand now: the trap must remove this container
+  trap "docker rm -fv '$name' >/dev/null 2>&1" EXIT
+  local i
+  for i in $(seq 1 60); do
+    [[ "$(docker inspect -f '{{.State.Health.Status}}' "$name" 2>/dev/null)" == healthy ]] && break
+    sleep 1
+  done
+  docker exec "$name" python3 -I /smoke.py "$repo" compute_invoice_total >/dev/null 2>&1 \
+    || fail "initial index failed:"$'\n'"$(docker logs "$name" 2>&1 | tail -20)"
+
+  # An uncommitted host edit must become searchable without anyone re-indexing.
+  printf '\n\ndef compute_refund_total(lines):\n    return -compute_invoice_total(lines)\n' >>"${repo}/billing.py"
+  local found=""
+  for i in $(seq 1 30); do
+    if docker exec "$name" python3 -I /smoke.py find "$repo" compute_refund_total >/dev/null 2>&1; then
+      found=1; break
+    fi
+    sleep 1
+  done
+  [[ -n "$found" ]] || fail "host edit not indexed within 30s:"$'\n'"$(docker logs "$name" 2>&1 | tail -20)"
+  echo "    edit searchable after ~${i}s"
+  docker logs "$name" 2>&1 | grep -q "refreshed " || fail "refresh loop did not log the re-index"
+
+  # Removing the worktree drops its project within a cycle or two.
+  rm -rf "$repo"
+  local gone=""
+  local listing
+  for i in $(seq 1 20); do
+    # Only a successful listing that lacks the repo counts (an empty one is fine).
+    if listing="$(docker exec "$name" python3 -I /smoke.py projects 2>/dev/null)" \
+      && ! grep -qxF "$repo" <<<"$listing"; then
+      gone=1; break
+    fi
+    sleep 1
+  done
+  [[ -n "$gone" ]] || fail "removed worktree still indexed after 20s:"$'\n'"$(docker logs "$name" 2>&1 | tail -20)"
+  echo "    removed worktree pruned after ~${i}s"
+  docker logs "$name" 2>&1 | grep -qF "$token" && fail "the bearer token appears in container logs"
+  docker rm -fv "$name" >/dev/null
+}
+
+# Compose contract for code-index: internal-only (no published port, only on an
+# internal network shared with opencode), read-only code and root filesystem,
+# bounded memory, no capabilities, and the bearer from the environment.
+test_code_index_compose_contract() {
+  local override="${REPO_ROOT}/overrides/opencode.server.json"
+  python3 - "$override" <<'PYCHECK' || fail "overrides/opencode.server.json: code-index entry is not the expected remote MCP"
+import json, sys
+s = json.load(open(sys.argv[1]))["mcp"]["servers"]["code-index"]
+assert s["type"] == "remote" and s["url"] == "http://code-index:8080/mcp" and s["oauth"] is False, s
+assert s["headers"]["Authorization"] == "Bearer {env:CODE_INDEX_TOKEN}", "token must come from the env placeholder"
+PYCHECK
+  docker_compose_available || skip "docker/jq not on host - override checked, compose render skipped"
+  local model
+  model="$(render_compose docker-compose.yml)" || fail "docker compose config failed to render the base file"
+  jq -e '
+    .services["code-index"] as $ci
+    | ($ci.ports // [] | length) == 0
+    and ($ci.networks | keys) == ["code-index-net"]
+    and .networks["code-index-net"].internal == true
+    and (.services.opencode.networks | has("code-index-net"))
+    and $ci.read_only == true
+    and ($ci.cap_drop | index("ALL")) != null
+    and ($ci.mem_limit | tostring | length) > 0
+    and ($ci.environment.CODE_INDEX_TOKEN | length) > 0
+    and ([$ci.volumes[] | select(.type == "bind") | .read_only == true] | all)
+    and ([$ci.volumes[] | select(.type == "bind")] | length) == 2
+    and ([$ci.volumes[] | select(.type == "volume") | .target] == ["/var/lib/code-index"])
+    and (.services.opencode.environment.CODE_INDEX_TOKEN | length) > 0
+  ' <<<"$model" >/dev/null \
+    || fail "code-index compose contract broken:"$'\n'"$(jq -c '{ci: .services["code-index"] | {ports, networks, read_only, cap_drop, mem_limit, volumes}, net: .networks["code-index-net"]}' <<<"$model")"
+}
+
 run_test "base compose grants the opencode service no daemon access" test_base_compose_grants_no_daemon_access
 run_test "sandbox overlay stays a socket control plane with no privileges" test_sandbox_overlay_is_socket_control_plane_only
 run_test "ownership guard passes when the worktree owner matches" test_ownership_guard_passes_when_owner_matches
@@ -283,6 +496,12 @@ run_test "entrypoint wires the ownership guard" test_entrypoint_wires_the_owners
 run_test "docker tool pins are forwarded to the image build" test_docker_tool_pins_are_forwarded_to_the_image_build
 run_test "image ships the client-side preflight toolchain" test_image_ships_the_preflight_toolchain
 run_test "retired Milvus stack stays removed" test_retired_milvus_stack_stays_removed
+run_test "code-index image pins are strict" test_code_index_image_pins_are_strict
+run_test "code-index entrypoint requires a token" test_code_index_entrypoint_requires_a_token
+run_test "code-index image serves authenticated MCP" test_code_index_image_serves_authenticated_mcp
+run_test "code-index refresh prune guard" test_code_index_refresh_prune_guard
+run_test "code-index refreshes edits and prunes removed worktrees" test_code_index_refreshes_edits_and_prunes_removed_worktrees
+run_test "code-index compose contract" test_code_index_compose_contract
 
 echo
 printf 'Result: %d passed, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"

@@ -13,6 +13,12 @@
     "servers": {
       "browse": {
         "disabled": true
+      },
+      "code-index": {
+        "type": "remote",
+        "url": "http://code-index:8080/mcp",
+        "oauth": false,
+        "headers": { "Authorization": "Bearer {env:CODE_INDEX_TOKEN}" }
       }
     }
   },

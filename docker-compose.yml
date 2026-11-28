@@ -53,6 +53,9 @@ services:
       # Bearer for the MCPJungle gateway (global config mcp.servers.mcpjungle).
       # MCPJUNGLE_TOKEN is canonical; MCPJUNGLE_OPENCODE_TOKEN kept as fallback.
       MCPJUNGLE_TOKEN: ${MCPJUNGLE_TOKEN:-${MCPJUNGLE_OPENCODE_TOKEN:-}}
+      # Bearer for the code-index MCP (overrides/opencode.server.json). compose.sh
+      # generates it into .env when neither Infisical nor .env sets one.
+      CODE_INDEX_TOKEN: ${CODE_INDEX_TOKEN:?CODE_INDEX_TOKEN is unset - start the stack with ./scripts/compose.sh}
       # oc-sandbox plugin (opencode-config-v2): backend + sidecar wiring.
       # URL/TOKEN stay empty until the §10 sidecar lands (ticket 09); with the
       # sandbox overlay the plugin uses the docker backend through the socket.
@@ -112,6 +115,45 @@ services:
         aliases:
           # FQDN for Twingate resource (override via OPENCODE_FQDN)
           - ${OPENCODE_FQDN:-opencode.local}
+      code-index-net: {}
+    depends_on:
+      # Not a hard gate: OpenCode works without the index (the MCP just shows
+      # as failed), so only wait for the container to be created.
+      code-index:
+        condition: service_started
+        required: false
+
+  # Local code index: codebase-memory-mcp behind mcp-proxy, reached by OpenCode
+  # as the `code-index` remote MCP (opencode-config-v2 ADR 0017). Code is
+  # mounted read-only at the same paths OpenCode uses; the index lives in the
+  # code-index-cache volume. No published port and no internet access.
+  code-index:
+    build:
+      context: ./docker/code-index
+      args:
+        CBM_VERSION: ${CBM_VERSION:-0.12.1}
+        CODE_INDEX_UID: ${OPENCODE_UID:-1000}
+        CODE_INDEX_GID: ${OPENCODE_GID:-1000}
+    container_name: code-index
+    restart: unless-stopped
+    mem_limit: ${CODE_INDEX_MEMORY_LIMIT:-2g}
+    memswap_limit: ${CODE_INDEX_MEMORY_LIMIT:-2g}
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      CODE_INDEX_TOKEN: ${CODE_INDEX_TOKEN:?CODE_INDEX_TOKEN is unset - start the stack with ./scripts/compose.sh}
+      CODE_INDEX_REFRESH_SECONDS: ${CODE_INDEX_REFRESH_SECONDS:-30}
+    volumes:
+      - code-index-cache:/var/lib/code-index
+      - ${OPENCODE_APPS_DIR:-${HOME}/projects}:${OPENCODE_APPS_DIR:-${HOME}/projects}:ro
+      - ${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:${OPENCODE_WORKTREES_DIR:-${HOME}/.local/share/opencode/worktree}:ro
+    networks:
+      - code-index-net
 
   twingate-connector:
     image: twingate/connector:1
@@ -136,7 +178,12 @@ services:
 
 volumes:
   opencode-data:
+  code-index-cache:
 
 networks:
   opencode-net:
     driver: bridge
+  # Internal: opencode <-> code-index only, no route to the internet.
+  code-index-net:
+    driver: bridge
+    internal: true

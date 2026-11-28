@@ -544,6 +544,189 @@ test_repo_env_is_not_requested_when_sandbox_is_off() {
   assert_contains "$output" "not required" || return 1
 }
 
+test_code_index_token_is_generated_once_and_never_printed() {
+  # shellcheck source=../scripts/lib/opencode-api.sh
+  source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
+  local root="${TMP_ROOT}/token-repo" out first second
+  mkdir -p "$root" && printf 'OPENCODE_SERVER_PASSWORD=x\n' >"${root}/.env"
+  REPO_ROOT="$root"
+  unset CODE_INDEX_TOKEN
+  out="$(ensure_code_index_token 2>&1)" || return 1
+  [[ -z "$out" ]] || fail "ensure_code_index_token printed output (it must stay silent)" || return 1
+  first="$(grep -E '^CODE_INDEX_TOKEN=' "${root}/.env" | cut -d= -f2)"
+  [[ "$first" =~ ^[0-9a-f]{64}$ ]] || fail "expected a 64-hex token in .env" || return 1
+  # A fresh process loads the stored token (as compose.sh does via load_env) and keeps it.
+  CODE_INDEX_TOKEN="$first"
+  ensure_code_index_token || return 1
+  second="$(grep -E '^CODE_INDEX_TOKEN=' "${root}/.env" | cut -d= -f2)"
+  [[ "$second" == "$first" ]] || fail "token was regenerated on a second run" || return 1
+  [[ "$(grep -c '^CODE_INDEX_TOKEN=' "${root}/.env")" == 1 ]] || fail "token written more than once"
+}
+
+test_code_index_token_respects_an_existing_value() {
+  # shellcheck source=../scripts/lib/opencode-api.sh
+  source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
+  local root="${TMP_ROOT}/token-existing"
+  mkdir -p "$root" && printf 'OPENCODE_SERVER_PASSWORD=x\n' >"${root}/.env"
+  REPO_ROOT="$root"
+  CODE_INDEX_TOKEN="from-infisical-from-infisical-from-infisical"
+  ensure_code_index_token || return 1
+  [[ "$CODE_INDEX_TOKEN" == "from-infisical-from-infisical-from-infisical" ]] || fail "existing token was replaced" || return 1
+  ! grep -q '^CODE_INDEX_TOKEN=' "${root}/.env" || fail "an existing token should not be copied into .env"
+}
+
+test_compose_wrapper_ensures_the_code_index_token() {
+  grep -q '^ensure_code_index_token ' "${REPO_ROOT}/scripts/compose.sh" \
+    || fail "scripts/compose.sh must call ensure_code_index_token before starting compose"
+}
+
+# --- code-index preflight / doctor -------------------------------------------
+# Doubles for a running stack. CI_* variables shape each scenario; the tokens
+# are distinctive so a leak into the output is easy to spot.
+CI_GOOD_TOKEN="tok-SECRET-0123456789abcdef0123456789abcdef"
+
+code_index_stack_doubles() {
+  # shellcheck source=../scripts/lib/preflight.sh
+  source "${REPO_ROOT}/scripts/lib/preflight.sh"
+  set +e
+  PREFLIGHT_OK=0 PREFLIGHT_WARN=0 PREFLIGHT_FAIL=0
+  CI_RUNNING="${CI_RUNNING-opencode-server code-index}"
+  CI_HEALTH="${CI_HEALTH-healthy}"
+  CI_SERVER_TOKEN="${CI_SERVER_TOKEN-$CI_GOOD_TOKEN}"
+  CI_INDEX_TOKEN="${CI_INDEX_TOKEN-$CI_GOOD_TOKEN}"
+  CI_MCP_ROOT="${CI_MCP_ROOT-[]}"
+  local connected='[{"name":"code-index","status":{"status":"connected"}}]'
+  CI_MCP_DIR="${CI_MCP_DIR-$connected}"
+  CI_SESSION_DIRS="${CI_SESSION_DIRS-/home/robin/apps/example}"
+  docker() {
+    case "$1" in
+      ps) tr ' ' '\n' <<<"$CI_RUNNING" ;;
+      inspect) printf '%s\n' "$CI_HEALTH" ;;
+      *) return 1 ;;
+    esac
+  }
+  container_env_get() {
+    case "${2:-opencode-server}" in
+      opencode-server) printf '%s' "$CI_SERVER_TOKEN" ;;
+      code-index) printf '%s' "$CI_INDEX_TOKEN" ;;
+    esac
+  }
+  load_env() { :; }
+  list_mcp_json() { printf '%s' "$CI_MCP_ROOT"; }
+  session_directories() { [[ -n "$CI_SESSION_DIRS" ]] && printf '%s\n' "$CI_SESSION_DIRS"; }
+  api_get() {
+    case "$1" in
+      "/api/mcp?directory="*) printf '%s' "$CI_MCP_DIR" ;;
+      *) return 1 ;;
+    esac
+  }
+}
+
+test_code_index_preflight_passes_on_a_healthy_stack() {
+  code_index_stack_doubles
+  local out
+  out="$(check_code_index; echo "counts ${PREFLIGHT_OK}/${PREFLIGHT_WARN}/${PREFLIGHT_FAIL}")"
+  assert_contains "$out" "[ok]   code-index healthy" || return 1
+  assert_contains "$out" "[ok]   CODE_INDEX_TOKEN" || return 1
+  assert_contains "$out" "[ok]   mcp/code-index: connected" || return 1
+  assert_contains "$out" "counts 3/0/0" || return 1
+  assert_not_contains "$out" "SECRET" || return 1
+}
+
+test_code_index_preflight_fails_when_the_service_is_stopped() {
+  CI_RUNNING="opencode-server"
+  code_index_stack_doubles
+  local out
+  out="$(check_code_index; echo "fails=${PREFLIGHT_FAIL}")"
+  assert_contains "$out" "[fail] code-index not running" || return 1
+  assert_contains "$out" "compose.sh up -d" || return 1
+  assert_contains "$out" "fails=1" || return 1
+}
+
+test_code_index_preflight_fails_when_unhealthy() {
+  CI_HEALTH="unhealthy"
+  code_index_stack_doubles
+  local out
+  out="$(check_code_index)"
+  assert_contains "$out" "[fail] code-index unhealthy" || return 1
+  assert_contains "$out" "docker logs code-index" || return 1
+}
+
+test_code_index_preflight_fails_when_the_token_is_missing() {
+  CI_SERVER_TOKEN=""
+  code_index_stack_doubles
+  local out
+  out="$(check_code_index)"
+  assert_contains "$out" "[fail] CODE_INDEX_TOKEN missing in opencode-server" || return 1
+  assert_not_contains "$out" "SECRET" || return 1
+}
+
+test_code_index_preflight_fails_on_a_token_mismatch_without_printing_either() {
+  CI_INDEX_TOKEN="tok-SECRET-ffffffffffffffffffffffffffffffff"
+  code_index_stack_doubles
+  local out
+  out="$(check_code_index)"
+  assert_contains "$out" "[fail] CODE_INDEX_TOKEN differs" || return 1
+  assert_not_contains "$out" "SECRET" || return 1
+}
+
+test_code_index_preflight_reports_a_failed_mcp() {
+  CI_MCP_ROOT='[{"name":"code-index","status":{"status":"failed","error":"Error POSTing to endpoint: Unauthorized (HTTP 401)"}}]'
+  code_index_stack_doubles
+  local out
+  out="$(check_code_index)"
+  assert_contains "$out" "[fail] mcp/code-index: failed (Error POSTing to endpoint: Unauthorized (HTTP 401))" || return 1
+}
+
+test_code_index_preflight_allows_for_lazy_mcp_start() {
+  # Nothing in the root listing: the check asks again for a directory with a session.
+  code_index_stack_doubles
+  local out
+  out="$(check_code_index)"
+  assert_contains "$out" "[ok]   mcp/code-index: connected" || return 1
+  # No session anywhere yet: a warning, never a failure.
+  CI_SESSION_DIRS=""
+  out="$(check_code_index; echo "fails=${PREFLIGHT_FAIL}")"
+  assert_contains "$out" "[warn] mcp/code-index: not started yet" || return 1
+  assert_contains "$out" "fails=0" || return 1
+}
+
+test_generic_mcp_check_leaves_code_index_to_its_own_check() {
+  CI_MCP_ROOT='[{"name":"code-index","status":{"status":"failed"}},{"name":"mcpjungle","status":{"status":"connected"}}]'
+  code_index_stack_doubles
+  local out
+  out="$(check_mcps)"
+  assert_contains "$out" "mcp/mcpjungle: connected" || return 1
+  assert_not_contains "$out" "code-index" || return 1
+}
+
+test_preflight_runs_the_code_index_check() {
+  grep -qE '^  check_code_index$' "${REPO_ROOT}/scripts/lib/preflight.sh" \
+    || fail "run_preflight must call check_code_index"
+}
+
+test_doctor_reports_code_index_memory_and_cache() {
+  # shellcheck source=../scripts/lib/opencode-api.sh
+  source "${REPO_ROOT}/scripts/lib/opencode-api.sh"
+  docker() {
+    case "$1 ${2:-}" in
+      "ps "*) echo code-index ;;
+      "stats "*) echo "MEM=65.9MiB / 2GiB CPU=0.12%" ;;
+      "exec "*) printf '86M\t/var/lib/code-index\n' ;;
+      *) return 1 ;;
+    esac
+  }
+  local out
+  out="$(code_index_doctor_report)" || return 1
+  assert_contains "$out" "MEM=65.9MiB / 2GiB" || return 1
+  assert_contains "$out" "cache=86M" || return 1
+  docker() { [[ "$1" == ps ]] && echo opencode-server; return 0; }
+  out="$(code_index_doctor_report)" || return 1
+  assert_contains "$out" "code-index not running" || return 1
+  grep -q '^code_index_doctor_report' "${REPO_ROOT}/scripts/doctor-perf.sh" \
+    || fail "doctor-perf.sh must call code_index_doctor_report"
+}
+
 run_test "main is the default work branch" test_main_is_the_default_work_branch
 run_test "fresh clone populates the worktree" test_fresh_clone_populates_the_worktree
 run_test "fresh clone checkout failure is reported" test_fresh_clone_checkout_failure_is_reported
@@ -565,6 +748,19 @@ run_test "repo env paste defaults to skip" test_repo_env_defaults_to_skip_withou
 run_test "repo env paste remains available explicitly" test_repo_env_allows_an_explicit_paste
 run_test "repo env paste accepts a CRLF terminator" test_repo_env_paste_accepts_a_crlf_terminator
 run_test "sandbox-off setup does not request repo env files" test_repo_env_is_not_requested_when_sandbox_is_off
+run_test "code-index token is generated once and never printed" test_code_index_token_is_generated_once_and_never_printed
+run_test "code-index token respects an existing value" test_code_index_token_respects_an_existing_value
+run_test "compose wrapper ensures the code-index token" test_compose_wrapper_ensures_the_code_index_token
+run_test "code-index preflight passes on a healthy stack" test_code_index_preflight_passes_on_a_healthy_stack
+run_test "code-index preflight fails when the service is stopped" test_code_index_preflight_fails_when_the_service_is_stopped
+run_test "code-index preflight fails when unhealthy" test_code_index_preflight_fails_when_unhealthy
+run_test "code-index preflight fails when the token is missing" test_code_index_preflight_fails_when_the_token_is_missing
+run_test "code-index preflight flags a token mismatch, printing neither" test_code_index_preflight_fails_on_a_token_mismatch_without_printing_either
+run_test "code-index preflight reports a failed MCP" test_code_index_preflight_reports_a_failed_mcp
+run_test "code-index preflight allows for lazy MCP start" test_code_index_preflight_allows_for_lazy_mcp_start
+run_test "generic MCP check leaves code-index to its own check" test_generic_mcp_check_leaves_code_index_to_its_own_check
+run_test "preflight runs the code-index check" test_preflight_runs_the_code_index_check
+run_test "doctor reports code-index memory and cache" test_doctor_reports_code_index_memory_and_cache
 
 echo
 printf 'Result: %d passed, %d failed\n' "$PASS" "$FAIL"

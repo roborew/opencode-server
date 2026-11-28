@@ -62,6 +62,12 @@ ensure_opencode_uid_gid >/dev/null || {
   echo "compose.sh: could not resolve OPENCODE_UID/GID" >&2
   exit 1
 }
+# Shared bearer for the code-index MCP: generated once into .env when neither
+# Infisical nor .env provides it (Infisical values still win at `infisical run`).
+ensure_code_index_token || {
+  echo "compose.sh: could not ensure CODE_INDEX_TOKEN" >&2
+  exit 1
+}
 # Reload so compose process sees upserted UID/GID from .env.
 load_env || true
 
