@@ -97,7 +97,7 @@ Re-run this before any future OpenCode version bump.
 |---|---|---|---|
 | OpenCode CLI | `2.3.0` via the v2 installer (`OPENCODE_VERSION` build arg) | **2.3.0** | Was the core issue of this audit; now pinned in the Dockerfile |
 | Infisical CLI | 0.43.84 | 0.44.10 (0.45.x rolling) | Note: Infisical moved its Linux package repo off Cloudsmith to `artifacts-cli.infisical.com` (Sep 2026) — your Dockerfile downloads the `.deb` from GitHub Releases, so it's unaffected ([Infisical/cli](https://github.com/Infisical/cli)) |
-| Milvus / etcd / minio | — | — | Removed 2026-11-27 with `claude-context`; replaced by the planned `code-index` service (opencode-config-v2 ADR 0017) |
+| Milvus / etcd / minio | — | — | Removed 2026-11-27 with `claude-context`; replaced by the `code-index` service (opencode-config-v2 ADR 0017; see integrations.md) |
 | yq | v4.53.2 | v4.53.x | Current; fine |
 | Node.js | 24.22.2 (exact) | 26 LTS (Lithium) | Pinned exact Node 24: the config repo requires `engines.node >= 24`, and the unused `claude-context` preinstall that failed against Node 24 V8 headers was removed |
 | Ubuntu base | 24.04 | 26.04 LTS | Leave as-is; Sysbox 0.7.0 is verified on 24.04, and the base image is independent of the host runtime |
