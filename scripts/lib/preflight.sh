@@ -37,6 +37,7 @@ run_preflight() {
   check_gh_auth
   check_providers
   check_twingate_connector
+  check_code_index
   check_mcps
 
   if [[ "$PREFLIGHT_JSON_MODE" == "1" ]]; then
@@ -948,6 +949,100 @@ check_twingate_connector() {
   fi
 }
 
+# --- code-index MCP sidecar (config repo ADR 0017) ----------------------------
+CODE_INDEX_CONTAINER="${CODE_INDEX_CONTAINER:-code-index}"
+
+# Print "status|error" for the code-index entry of an /api/mcp listing on stdin;
+# print nothing when the listing has no such entry.
+_code_index_mcp_status() {
+  python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if isinstance(data, dict):
+    data = data.get("data") or []
+for info in data if isinstance(data, list) else []:
+    if isinstance(info, dict) and info.get("name") == "code-index":
+        st = info.get("status")
+        err = ""
+        if isinstance(st, dict):
+            err = st.get("error") or ""
+            st = st.get("status")
+        err = " ".join(str(err).split())[:200]
+        print("%s|%s" % (st or "unknown", err))
+        break
+' 2>/dev/null || true
+}
+
+# Service up and healthy, one shared bearer token, and the MCP connected.
+# Token values are compared in-process and never printed.
+check_code_index() {
+  if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CODE_INDEX_CONTAINER"; then
+    preflight_record fail "code-index not running" \
+      "./scripts/compose.sh up -d code-index; then docker logs ${CODE_INDEX_CONTAINER}"
+    return
+  fi
+  local health
+  health="$(docker inspect "$CODE_INDEX_CONTAINER" \
+    --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' 2>/dev/null)" \
+    || health="uninspectable"
+  case "$health" in
+    healthy) preflight_record ok "code-index healthy" ;;
+    starting) preflight_record warn "code-index still starting" "re-run preflight in a minute" ;;
+    *) preflight_record fail "code-index ${health:-unknown}" "docker logs ${CODE_INDEX_CONTAINER}" ;;
+  esac
+
+  # The rest needs opencode-server; check_container already reports it missing.
+  container_running || return 0
+
+  local server_token index_token
+  server_token="$(container_env_get CODE_INDEX_TOKEN)"
+  index_token="$(container_env_get CODE_INDEX_TOKEN "$CODE_INDEX_CONTAINER")"
+  if [[ -z "$server_token" ]]; then
+    preflight_record fail "CODE_INDEX_TOKEN missing in ${CONTAINER_NAME}" \
+      "./scripts/compose.sh up -d  # generates the token and recreates both services"
+  elif (( ${#server_token} < 32 )); then
+    preflight_record fail "CODE_INDEX_TOKEN shorter than 32 characters" \
+      "remove CODE_INDEX_TOKEN from .env/Infisical, then ./scripts/compose.sh up -d"
+  elif [[ "$server_token" != "$index_token" ]]; then
+    preflight_record fail "CODE_INDEX_TOKEN differs between ${CONTAINER_NAME} and ${CODE_INDEX_CONTAINER}" \
+      "./scripts/compose.sh up -d --force-recreate opencode code-index"
+  else
+    preflight_record ok "CODE_INDEX_TOKEN set and shared with ${CODE_INDEX_CONTAINER}"
+  fi
+  unset server_token index_token
+
+  load_env 2>/dev/null || true
+  # OpenCode v2 starts MCPs per directory, on that directory's first session,
+  # so an empty root listing is normal: ask again for a directory with a session.
+  local result dir encoded
+  result="$(list_mcp_json 2>/dev/null | _code_index_mcp_status)"
+  if [[ -z "$result" ]]; then
+    dir="$(session_directories 2>/dev/null | head -n1)"
+    if [[ -n "$dir" ]]; then
+      encoded="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$dir")"
+      result="$(api_get "/api/mcp?directory=${encoded}" 10 2>/dev/null | _code_index_mcp_status)"
+    fi
+  fi
+  local status="${result%%|*}" error="${result#*|}"
+  case "$status" in
+    connected)
+      preflight_record ok "mcp/code-index: connected" ;;
+    "")
+      preflight_record warn "mcp/code-index: not started yet (OpenCode starts MCPs with a directory's first session)" \
+        "open a session in any project, then re-run preflight" ;;
+    failed)
+      preflight_record fail "mcp/code-index: failed${error:+ (${error})}" \
+        "a 401 means the tokens differ: ./scripts/compose.sh up -d --force-recreate opencode code-index" ;;
+    disabled)
+      preflight_record warn "mcp/code-index: disabled" "check mcp.servers in overrides/opencode.server.json" ;;
+    *)
+      preflight_record warn "mcp/code-index: ${status}${error:+ (${error})}" "re-run preflight in a minute" ;;
+  esac
+}
+
 check_mcps() {
   if ! container_running; then
     return
@@ -988,6 +1083,8 @@ for info in sorted(data, key=lambda i: (i.get('name') or '')):
     [[ -z "$line" ]] && continue
     local status="${line%%|*}"
     local name="${line#*|}"
+    # check_code_index owns code-index, including OpenCode's lazy MCP start.
+    [[ "$name" == code-index ]] && continue
     case "$status" in
       disabled)
         # Skip disabled MCPs silently

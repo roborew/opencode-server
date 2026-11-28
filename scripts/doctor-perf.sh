@@ -36,6 +36,9 @@ else
   echo "(opencode-server not running or not inspectable)"
 fi
 
+hr "code-index"
+code_index_doctor_report
+
 hr "Desktop app-data"
 if [[ -d "${DESKTOP_DIR}" ]]; then
   du -sh "${DESKTOP_DIR}" 2>/dev/null || true
