@@ -13,8 +13,10 @@ recommendation.
 2. Use the same model and agent (`build`), a fresh session per question, and no
    other MCP traffic.
 3. Ask each question below twice: once with code-index disabled
-   (`"enabled": false` for `code-index` in the server override, then recreate
-   `opencode`), and once enabled.
+   (`"enabled": false` for `code-index` in `overrides/opencode.server.json`; the
+   image bakes that file in, so rebuild with
+   `./scripts/compose.sh up -d --build opencode`), and once enabled (revert and
+   rebuild the same way).
 4. Record from the session's usage: input + output tokens and the number of tool
    calls. Grade each answer as correct, partial or wrong against the code.
 5. SC 5b (natural-language lookup): for N1–N5, the right symbol must appear in the

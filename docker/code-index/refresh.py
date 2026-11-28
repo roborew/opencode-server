@@ -7,8 +7,9 @@ was already indexed (indexing stays on request):
 
 - re-indexes it when its git HEAD or working-tree state changed (incremental,
   about a second on an unchanged repo);
-- deletes it when its root is gone but the root's parent still exists, so a
-  removed slice worktree disappears while a missing mount deletes nothing.
+- deletes it when its root is gone but the root's parent still has other
+  entries, so a removed slice worktree disappears while an empty or missing
+  mount deletes nothing (a project in an emptied parent waits for a sibling).
 
 It talks to the server through mcp-proxy, so one stdio child owns the store.
 The bearer comes from MCP_PROXY_AUTH_TOKEN and is never logged.
@@ -100,7 +101,7 @@ def digest(root):
     h = hashlib.sha256()
     try:
         h.update(git(root, "rev-parse", "HEAD"))
-        status = git(root, "status", "--porcelain=v1", "-z", "--untracked-files=normal")
+        status = git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
     except (subprocess.SubprocessError, OSError):
         return None  # not a git repo (or git timed out): leave it as indexed
     h.update(status)
@@ -117,29 +118,54 @@ def digest(root):
     return h.hexdigest()
 
 
+def parent_is_live(root):
+    """A removed worktree leaves siblings behind; an empty or missing parent may
+    be a mount whose host source is absent, so it never counts as proof."""
+    parent = os.path.dirname(root)
+    try:
+        with os.scandir(parent) as entries:
+            return any(True for _ in entries)
+    except OSError:
+        return False
+
+
+def refresh_project(client, seen, name, root):
+    if not os.path.isdir(root):
+        if parent_is_live(root):
+            client.call("delete_project", {"project": name})
+            seen.pop(name, None)
+            log(f"pruned {name} (root removed)")
+        else:
+            log(f"prune skipped for {name}: {os.path.dirname(root)} is empty or missing (mount may be down)")
+        return
+    state = digest(root)
+    if state is None or seen.get(name) == state:
+        return
+    started = time.monotonic()
+    client.call("index_repository", {"repo_path": root, "name": name})
+    if digest(root) == state:
+        seen[name] = state
+    else:
+        seen.pop(name, None)  # changed while indexing: index again next cycle
+    log(f"refreshed {name} in {time.monotonic() - started:.1f}s")
+
+
 def cycle(client, seen):
     client.open()
     try:
-        live = set()
+        listed = set()
         for proj in client.projects():
             name, root = proj.get("name"), (proj.get("root_path") or "").rstrip("/")
             if not name or not root:
                 continue
-            if not os.path.isdir(root):
-                if os.path.isdir(os.path.dirname(root)):
-                    client.call("delete_project", {"project": name})
-                    seen.pop(name, None)
-                    log(f"pruned {name} (root removed)")
-                continue
-            live.add(name)
-            state = digest(root)
-            if state is None or seen.get(name) == state:
-                continue
-            started = time.monotonic()
-            client.call("index_repository", {"repo_path": root, "name": name})
-            seen[name] = state
-            log(f"refreshed {name} in {time.monotonic() - started:.1f}s")
-        for name in set(seen) - live:
+            listed.add(name)
+            # One failing project (for example an upstream resource limit) must
+            # not starve the rest; its marker stays, so it is retried next cycle.
+            try:
+                refresh_project(client, seen, name, root)
+            except (RuntimeError, ValueError, subprocess.SubprocessError) as err:
+                log(f"{name}: {str(err)[:300]}")
+        for name in set(seen) - listed:
             seen.pop(name, None)
     finally:
         client.close()

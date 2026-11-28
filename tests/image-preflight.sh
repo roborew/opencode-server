@@ -334,7 +334,7 @@ test_code_index_image_serves_authenticated_mcp() {
   # Runs in run_test's subshell, so this EXIT trap only cleans up the container;
   # the suite-level trap still removes TMP_ROOT.
   # shellcheck disable=SC2064  # expand now: the trap must remove this container
-  trap "docker rm -f '$name' >/dev/null 2>&1" EXIT
+  trap "docker rm -fv '$name' >/dev/null 2>&1" EXIT
 
   local health="" i
   for i in $(seq 1 60); do
@@ -351,7 +351,44 @@ test_code_index_image_serves_authenticated_mcp() {
   [[ "$(docker exec "$name" id -u)" != 0 ]] || fail "code-index runs as root"
   docker logs "$name" 2>&1 | grep -qF "$token" && fail "the bearer token appears in container logs"
   [[ -z "$(git -C "$repo" status --porcelain)" ]] || fail "indexing wrote into the read-only repo"
-  docker rm -f "$name" >/dev/null
+  docker rm -fv "$name" >/dev/null
+}
+
+# The prune guard, without Docker: a missing root under an empty parent (a
+# mount whose host source is absent) is never deleted; one with siblings is,
+# and a failing project does not stop the others.
+test_code_index_refresh_prune_guard() {
+  local work="${TMP_ROOT}/prune-guard"
+  mkdir -p "${work}/empty-mount" "${work}/live/sibling" "${work}/ok"
+  python3 -I - "${REPO_ROOT}/docker/code-index/refresh.py" "$work" <<'PYGUARD' || fail "refresh prune guard misbehaved"
+import importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("refresh", sys.argv[1])
+r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+work = sys.argv[2]
+subprocess.run(["git", "init", "-q", f"{work}/ok"], check=True)
+subprocess.run(["git", "-C", f"{work}/ok", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+r.log = lambda msg: None
+class Fake:
+    def __init__(self): self.calls = []
+    def open(self): pass
+    def close(self): pass
+    def projects(self):
+        return [{"name": "boom", "root_path": f"{work}/ok"},
+                {"name": "under-empty", "root_path": f"{work}/empty-mount/gone"},
+                {"name": "removed", "root_path": f"{work}/live/gone"},
+                {"name": "ok", "root_path": f"{work}/ok"}]
+    def call(self, tool, args):
+        self.calls.append((tool, args.get("name") or args.get("project")))
+        if args.get("name") == "boom":
+            raise RuntimeError("index_repository failed: resource limit")
+        return "{}"
+c = Fake(); seen = {}
+r.cycle(c, seen)
+assert ("delete_project", "under-empty") not in c.calls, c.calls
+assert ("delete_project", "removed") in c.calls, c.calls
+assert ("index_repository", "ok") in c.calls and "ok" in seen, (c.calls, seen)
+assert "boom" not in seen, seen
+PYGUARD
 }
 
 # SC 4 / SC 5c: the refresh loop picks up a host edit to an indexed repo and
@@ -363,7 +400,7 @@ test_code_index_refreshes_edits_and_prunes_removed_worktrees() {
 
   local worktrees="${TMP_ROOT}/refresh-worktrees" repo
   repo="${worktrees}/slice-1-billing"
-  mkdir -p "$worktrees"
+  mkdir -p "${worktrees}/slice-2-other"  # a sibling: the parent is a live mount
   cp -R "${REPO_ROOT}/tests/fixtures/code-index-repo" "$repo"
   if ! { git -C "$repo" init -q && git -C "$repo" add -A \
     && git -C "$repo" -c user.name=t -c user.email=t@example.invalid commit -qm fixture; }; then
@@ -378,7 +415,7 @@ test_code_index_refreshes_edits_and_prunes_removed_worktrees() {
     -v "${worktrees}:${worktrees}:ro" -v "${REPO_ROOT}/tests/code-index-smoke.py:/smoke.py:ro" \
     "$tag" >/dev/null || fail "code-index container did not start"
   # shellcheck disable=SC2064  # expand now: the trap must remove this container
-  trap "docker rm -f '$name' >/dev/null 2>&1" EXIT
+  trap "docker rm -fv '$name' >/dev/null 2>&1" EXIT
   local i
   for i in $(seq 1 60); do
     [[ "$(docker inspect -f '{{.State.Health.Status}}' "$name" 2>/dev/null)" == healthy ]] && break
@@ -403,8 +440,11 @@ test_code_index_refreshes_edits_and_prunes_removed_worktrees() {
   # Removing the worktree drops its project within a cycle or two.
   rm -rf "$repo"
   local gone=""
+  local listing
   for i in $(seq 1 20); do
-    if ! docker exec "$name" python3 -I /smoke.py projects 2>/dev/null | grep -qxF "$repo"; then
+    # Only a successful listing that lacks the repo counts (an empty one is fine).
+    if listing="$(docker exec "$name" python3 -I /smoke.py projects 2>/dev/null)" \
+      && ! grep -qxF "$repo" <<<"$listing"; then
       gone=1; break
     fi
     sleep 1
@@ -412,7 +452,7 @@ test_code_index_refreshes_edits_and_prunes_removed_worktrees() {
   [[ -n "$gone" ]] || fail "removed worktree still indexed after 20s:"$'\n'"$(docker logs "$name" 2>&1 | tail -20)"
   echo "    removed worktree pruned after ~${i}s"
   docker logs "$name" 2>&1 | grep -qF "$token" && fail "the bearer token appears in container logs"
-  docker rm -f "$name" >/dev/null
+  docker rm -fv "$name" >/dev/null
 }
 
 # Compose contract for code-index: internal-only (no published port, only on an
@@ -459,6 +499,7 @@ run_test "retired Milvus stack stays removed" test_retired_milvus_stack_stays_re
 run_test "code-index image pins are strict" test_code_index_image_pins_are_strict
 run_test "code-index entrypoint requires a token" test_code_index_entrypoint_requires_a_token
 run_test "code-index image serves authenticated MCP" test_code_index_image_serves_authenticated_mcp
+run_test "code-index refresh prune guard" test_code_index_refresh_prune_guard
 run_test "code-index refreshes edits and prunes removed worktrees" test_code_index_refreshes_edits_and_prunes_removed_worktrees
 run_test "code-index compose contract" test_code_index_compose_contract
 
